@@ -79,6 +79,66 @@ Les copies JSON sont écrites progressivement dans `data/raw/`. Pour arrêter la
 base, utiliser `docker compose down`; ajouter `-v` supprime volontairement son
 volume persistant.
 
+## Entrepôt décisionnel
+
+Le script `src/DWH_peche_nc` construit la base `PecheDWH` à partir de l'ODS
+`peche_nc.env_mer`. Il s'exécute dans SSMS, sur l'instance qui héberge l'ODS,
+et se rejoue sans précaution : les tables sont retirées dans l'ordre inverse
+des dépendances puis reconstruites.
+
+Le modèle est une constellation : quatre tables de faits à des grains
+différents, dix dimensions partagées et deux tables de pont.
+
+| Table de faits | Grain |
+|---|---|
+| `FAIT_CARTE` | une carte de pêche |
+| `FAIT_CAMPAGNE` | une campagne, c'est-à-dire une sortie |
+| `FAIT_CAPTURE` | une espèce capturée lors d'une campagne |
+| `FAIT_FRAIS` | un poste de dépense d'une campagne |
+
+Chaque dimension porte une clé de substitution et un membre inconnu de clé
+`-1`. Les faits ne contiennent donc jamais de `NULL` en clé étrangère, et
+aucune jointure ne perd de lignes en silence. Les clés métier restent en
+attribut pour pouvoir remonter à la source.
+
+### Deux pièges à connaître avant d'interroger
+
+`FAIT_CARTE` est un **agrégat** : ses mesures somment les campagnes de la
+carte. Additionner `FAIT_CARTE.carte_recette` et
+`FAIT_CAMPAGNE.campagne_recette` compterait deux fois le même chiffre
+d'affaires. Il faut choisir le grain selon la question posée, jamais les deux
+dans la même somme.
+
+Une capture peut être déclarée sur plusieurs zones de pêche. `FAIT_CAPTURE`
+n'en porte donc aucune, sans quoi la ligne — et le poids avec elle — serait
+multipliée. La ventilation passe par `PONT_CAPTURE_ZONE`, qui porte un
+facteur de répartition valant `1 / nb_zones` :
+
+```sql
+SELECT z.label, SUM(f.capture_poids_entier_total * p.facteur) AS poids
+FROM FAIT_CAPTURE f
+JOIN PONT_CAPTURE_ZONE p ON p.capture_id = f.capture_id
+JOIN DIM_ZONE_PECHE   z ON z.zone_key    = p.zone_key
+GROUP BY z.label;
+```
+
+Pour un total sans ventilation géographique, interroger `FAIT_CAPTURE` seule :
+la somme y est déjà complète. À noter que la zone n'est renseignée que sur une
+minorité des captures, ce qui limite d'autant la portée des analyses
+spatiales.
+
+### Contrôles
+
+La fin du script compte les lignes de chaque table, mesure la part de membres
+inconnus dans les faits, vérifie que les facteurs du pont somment bien à 1 par
+capture, et compare `FAIT_CARTE` à la somme des campagnes correspondantes. Un
+taux élevé de clés `-1` signale une jointure ratée plutôt qu'une donnée
+manquante.
+
+Les `CREATE INDEX` de la fin demandent de la mémoire. Sur une instance qui en
+manque, ils attendent indéfiniment avec un `wait_type` à `RESOURCE_SEMAPHORE` ;
+la requête qui permet de le diagnostiquer est en commentaire dans le script.
+
 ## Tests unitaires
 
 ```bash
