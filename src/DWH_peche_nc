@@ -1,51 +1,10 @@
--- ============================================================================
--- CONSTRUCTION DU DWH  —  PecheDWH
--- Fusion des deux modélisations du groupe, à partir de l'ODS "peche_nc.env_mer"
--- Modèle : constellation à 4 tables de faits + 2 tables de pont (SFD §6)
--- ============================================================================
---
--- CE QUI VIENT D'OÙ
---
---   Repris de la version d'Élodie (structure de référence, alignée SFD/TP) :
---     - le découpage DIM_* / FAIT_* et les renvois aux sections du SFD
---     - la neutralisation de duree_jours quand la fin précède le début
---     - TRY_CONVERT sur navire_annee_construction
---     - DIM_CARROYAGE conservant le lien vers la zone de pêche
---     - la base séparée PecheDWH, alimentée depuis l'ODS
---
---   Repris de la version de Bastian (garde-fous) :
---     - clés de substitution INT IDENTITY + membre inconnu (clé -1)
---     - DIM_TEMPS générée en calendrier CONTINU, dates hors plage -> -1
---     - PONT_CAPTURE_ZONE portant nb_zones et facteur = 1/n
---     - FAIT_CARTE signalée comme AGRÉGAT
---     - script rejouable : tout est reconstruit à l'identique
---     - clés primaires sur les faits et les ponts
---
---   Corrigé (trois défauts vérifiés sur les données réelles) :
---     1. DIM_PERSONNE : le NOT IN lisait la table pendant l'INSERT qui la
---        remplit, donc sur une table vide. 214 identifiants sont à la fois
---        capitaine et patron, l'UNION produisait 525 lignes pour 524
---        identifiants distincts -> violation de PRIMARY KEY, script arrêté.
---     2. DIM_TECHNIQUE : grain (technique, transformation) alors que le fait
---        ne portait que technique. 14 techniques pour 129 couples : toute
---        jointure multipliait les lignes par 9,2.
---     3. DIM_TEMPS : construite par UNION des dates observées, il manquait
---        646 769 jours sur l'étendue, et la campagne aberrante datée de
---        l'an 221 y entrait comme une ligne légitime.
---
--- SI VOUS L'EXÉCUTEZ SUR L'AUTRE ODS (ProvinceSud.env_mer), deux tables
--- portent un nom différent :
---     carte_pecherie_specifique  ->  carte_pecherie
---     frais / campagne_frais.frais_id  ->  ref_poste_frais / campagne_frais.poste
---
--- ============================================================================
+-- Construction du DWH "PecheDWH" depuis l'ODS "peche_nc.env_mer".
+-- Constellation : 4 tables de faits, 10 dimensions, 2 tables de pont.
+-- Chaque dimension porte une cle de substitution et un membre inconnu de
+-- cle -1 : aucun NULL en cle etrangere, aucune jointure ne perd de lignes.
 
 
--- ============================================================================
--- 0. BASE ET REMISE À ZÉRO  (rejouabilité)
--- ============================================================================
--- Un CREATE DATABASE nu échoue au second passage. On ne crée que si besoin,
--- et on retire les tables dans l'ordre inverse des dépendances.
+-- 0. BASE ET REMISE A ZERO ---------------------------------------------------
 
 IF DB_ID('PecheDWH') IS NULL
     CREATE DATABASE PecheDWH;
@@ -53,6 +12,7 @@ GO
 USE PecheDWH;
 GO
 
+-- Ordre inverse des dependances.
 DROP TABLE IF EXISTS PONT_CAPTURE_ZONE;
 DROP TABLE IF EXISTS PONT_CARTE_PECHERIE;
 DROP TABLE IF EXISTS FAIT_FRAIS;
@@ -73,21 +33,10 @@ DROP TABLE IF EXISTS DIM_TEMPS;
 GO
 
 
--- ============================================================================
--- 1. DIMENSIONS  (SFD §6.3)
--- ============================================================================
--- Toutes les dimensions portent une clé de substitution et un membre
--- « inconnu » de clé -1. Les faits ne contiennent donc jamais de NULL en clé
--- étrangère : aucune jointure ne perd de lignes en silence. La clé métier est
--- conservée en attribut, pour pouvoir remonter à la source.
+-- 1. DIMENSIONS --------------------------------------------------------------
 
-
--- ---- DIM_TEMPS : calendrier CONTINU -----------------------------------------
--- Une dimension temps se génère, elle ne se déduit pas des données observées :
--- sinon les jours sans activité manquent et l'on ne peut plus ni compter les
--- mois creux, ni faire de cumul glissant.
--- Clé au format AAAAMMJJ. Bornes 1990-2030 : la source commence en 1991.
-
+-- Calendrier genere, pas deduit des dates observees : sinon les jours sans
+-- activite manquent et le cumul glissant devient impossible. Cle AAAAMMJJ.
 CREATE TABLE DIM_TEMPS (
     temps_key    INT          NOT NULL PRIMARY KEY,
     date_id      DATE         NULL,
@@ -114,8 +63,7 @@ INSERT INTO DIM_TEMPS (temps_key, date_id, jour, mois, trimestre, annee,
 SELECT CONVERT(INT, FORMAT(d, 'yyyyMMdd')), d,
        DAY(d), MONTH(d), DATEPART(QUARTER, d), YEAR(d),
        DATENAME(MONTH, d), DATENAME(WEEKDAY, d),
-       -- hémisphère sud : l'été calédonien est à cheval sur deux années
-       CASE WHEN MONTH(d) IN (12,1,2) THEN 'Été'
+       CASE WHEN MONTH(d) IN (12,1,2) THEN 'Été'     -- hemisphere sud
             WHEN MONTH(d) IN (3,4,5)  THEN 'Automne'
             WHEN MONTH(d) IN (6,7,8)  THEN 'Hiver'
             ELSE 'Printemps' END
@@ -123,10 +71,6 @@ FROM jours
 OPTION (MAXRECURSION 0);
 GO
 
-
--- ---- DIM_COMMUNE ------------------------------------------------------------
--- Axe d'analyse à part entière (SFD : répartition des pêcheurs par commune).
--- La laisser en texte dans plusieurs dimensions interdit de la regrouper.
 
 CREATE TABLE DIM_COMMUNE (
     commune_key INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
@@ -137,6 +81,7 @@ SET IDENTITY_INSERT DIM_COMMUNE ON;
 INSERT INTO DIM_COMMUNE (commune_key, commune) VALUES (-1, 'Non renseignée');
 SET IDENTITY_INSERT DIM_COMMUNE OFF;
 
+-- La commune apparait dans trois colonnes sources.
 INSERT INTO DIM_COMMUNE (commune)
 SELECT DISTINCT LTRIM(RTRIM(c))
 FROM (
@@ -148,19 +93,9 @@ WHERE c IS NOT NULL AND LTRIM(RTRIM(c)) <> '';
 GO
 
 
--- ---- DIM_PERSONNE : capitaines et patrons pêcheurs, fusionnés ---------------
--- CORRECTIF. La version précédente filtrait avec
---   WHERE patron_pecheur_id NOT IN (SELECT personne_id FROM DIM_PERSONNE)
--- à l'intérieur de l'INSERT qui remplit DIM_PERSONNE : la sous-requête voit la
--- table telle qu'elle était au début de l'instruction, c'est-à-dire vide. Le
--- filtre ne filtrait rien, et l'UNION ne dédoublonnait que les lignes
--- entières. 214 identifiants étant à la fois capitaine et patron, il suffisait
--- d'une commune différente entre les deux rôles pour produire deux lignes de
--- même identifiant — et la clé primaire rejetait l'insertion.
---
--- On agrège donc en une seule passe, sur l'union des deux rôles, avec deux
--- drapeaux qui disent lequel la personne a tenu.
-
+-- Capitaines et patrons fusionnes. Un meme identifiant tient parfois les deux
+-- roles avec des attributs differents : on agrege en une passe, sinon deux
+-- lignes de meme personne_id sortent de l'UNION.
 CREATE TABLE DIM_PERSONNE (
     personne_key    INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
     personne_id     VARCHAR(255)  NULL,
@@ -206,13 +141,11 @@ GROUP BY r.personne_id, ISNULL(dc.commune_key, -1);
 GO
 
 
--- ---- DIM_CARTE : attributs descriptifs de la carte, pas les mesures ---------
-
 CREATE TABLE DIM_CARTE (
     carte_key                   INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
     carte_id                    VARCHAR(255)  NULL,
-    carte_type                  NVARCHAR(120) NULL,   -- libellé normalisé
-    carte_type_source           NVARCHAR(120) NULL,   -- libellé brut conservé
+    carte_type                  NVARCHAR(120) NULL,
+    carte_type_source           NVARCHAR(120) NULL,
     carte_annee                 VARCHAR(20)   NULL,
     carte_renouvellement        BIT           NULL,
     carte_autorisation_statut   NVARCHAR(120) NULL,
@@ -227,10 +160,8 @@ INSERT INTO DIM_CARTE (carte_key, carte_id, carte_type, carte_type_source,
 VALUES (-1, NULL, 'Inconnu', NULL, -1);
 SET IDENTITY_INSERT DIM_CARTE OFF;
 
--- 35 ans de saisie ont produit cinq orthographes pour deux types de carte
--- (« Côtière », « Cotière », « CÃ´tiÃ¨re » doublement encodée à la source,
--- « Hauturière », « Haurière »). On normalise pour l'affichage tout en
--- gardant la variante brute : elle date le changement de système de saisie.
+-- La source porte cinq orthographes pour deux types de carte, dont une
+-- doublement encodee. On normalise et on garde la variante brute.
 INSERT INTO DIM_CARTE (carte_id, carte_type, carte_type_source, carte_annee,
                        carte_renouvellement, carte_autorisation_statut,
                        carte_autorisation_annee, commune_key,
@@ -252,12 +183,8 @@ LEFT JOIN DIM_COMMUNE dc
 GO
 
 
--- ---- DIM_NAVIRE -------------------------------------------------------------
--- La motorisation est repliée ici (nombre de moteurs, marque et carburant du
--- moteur principal) : c'est ainsi qu'on l'interroge, et cela évite de faire
--- une dimension d'une table qu'aucun fait ne référence.
--- 235 navires sur 660 ne déclarent aucun moteur ; c'est la source, pas l'import.
-
+-- La motorisation est repliee ici : aucun fait ne referencerait une dimension
+-- moteur separee.
 CREATE TABLE DIM_NAVIRE (
     navire_key            INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
     navire_id             VARCHAR(255)  NULL,
@@ -284,9 +211,7 @@ INSERT INTO DIM_NAVIRE (navire_id, annee_construction, longueur,
                         categorie_navigation, materiau, constructeur,
                         nb_moteurs, moteur_marque, moteur_carburant)
 SELECT n.navire_id,
-       -- l'année arrive en texte et n'est pas toujours numérique
-       TRY_CONVERT(INT, n.navire_annee_construction),
-       -- une longueur nulle ou négative n'a pas de sens physique
+       TRY_CONVERT(INT, n.navire_annee_construction),  -- texte en source
        CASE WHEN n.navire_longueur > 0 THEN n.navire_longueur END,
        CASE WHEN n.navire_longueur IS NULL OR n.navire_longueur <= 0 THEN 'Inconnue'
             WHEN n.navire_longueur <  6 THEN 'Moins de 6 m'
@@ -308,12 +233,8 @@ LEFT JOIN (
 GO
 
 
--- ---- DIM_ESPECE : hiérarchie Catégorie -> Produit (SFD) ---------------------
--- Clé de substitution plutôt qu'une PK (categorie_code, produit) : celle-ci
--- portait sur du NVARCHAR(4000), très au-delà des 900 octets admis pour une
--- clé d'index — accepté avec un avertissement, puis cassant le jour où un
--- libellé dépasse.
-
+-- Cle de substitution : une PK (categorie_code, produit) porterait sur du
+-- NVARCHAR long, au-dela des 900 octets admis pour une cle d'index.
 CREATE TABLE DIM_ESPECE (
     espece_key      INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
     categorie_code  VARCHAR(255)  NULL,
@@ -341,13 +262,8 @@ GROUP BY capture_categorie_code, LEFT(capture_produit, 400);
 GO
 
 
--- ---- DIM_TECHNIQUE ----------------------------------------------------------
--- CORRECTIF. Son grain est le COUPLE (technique, transformation) : 14
--- techniques pour 129 couples. Le fait ne portant que « technique », une
--- jointure multipliait chaque capture par 9,2 en moyenne, et aucune clé ne le
--- signalait. On lui donne une clé de substitution, et c'est elle que le fait
--- référence : le grain redevient cohérent.
-
+-- Grain : le couple (technique, transformation). Joindre sur la seule
+-- technique multiplierait les lignes du fait, d'ou la cle de substitution.
 CREATE TABLE DIM_TECHNIQUE (
     technique_key  INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
     technique      NVARCHAR(200) NULL,
@@ -366,11 +282,8 @@ WHERE capture_technique IS NOT NULL OR capture_transformation IS NOT NULL;
 GO
 
 
--- ---- DIM_ZONE_PECHE ---------------------------------------------------------
--- L'ODS n'expose pas de référentiel de zones : on le reconstruit par
--- déduplication depuis capture_zone, en récupérant au passage la commune et la
--- superficie que porte le carroyage.
-
+-- Aucun referentiel de zones dans l'ODS : reconstruit depuis capture_zone,
+-- commune et superficie venant du carroyage.
 CREATE TABLE DIM_ZONE_PECHE (
     zone_key       INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
     zone_peche_id  VARCHAR(255)  NULL,
@@ -386,7 +299,6 @@ SET IDENTITY_INSERT DIM_ZONE_PECHE OFF;
 
 INSERT INTO DIM_ZONE_PECHE (zone_peche_id, label, communes, superficie_km2)
 SELECT z.zone_peche_id, MAX(z.label),
-       -- plusieurs communes peuvent se partager une zone
        (SELECT STRING_AGG(CAST(c.carroyage_commune AS NVARCHAR(100)), ', ')
         FROM peche_nc.env_mer.carroyage_peche c
         WHERE c.coarroyage_zone_peche_id = z.zone_peche_id),
@@ -398,10 +310,6 @@ WHERE z.zone_peche_id IS NOT NULL
 GROUP BY z.zone_peche_id;
 GO
 
-
--- ---- DIM_CARROYAGE ----------------------------------------------------------
--- Conservée telle quelle, avec le lien vers la zone : c'est la maille
--- géographique fine, utile pour une restitution cartographique.
 
 CREATE TABLE DIM_CARROYAGE (
     carroyage_key         INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
@@ -428,8 +336,6 @@ LEFT JOIN DIM_ZONE_PECHE z ON z.zone_peche_id = c.coarroyage_zone_peche_id;
 GO
 
 
--- ---- DIM_PECHERIE : pêcheries spécifiques autorisées sur une carte ----------
-
 CREATE TABLE DIM_PECHERIE (
     pecherie_key INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
     code         NVARCHAR(60)  NULL,
@@ -453,19 +359,11 @@ GROUP BY code;
 GO
 
 
--- ============================================================================
--- 2. TABLES DE FAITS  (SFD §6.5)
--- ============================================================================
+-- 2. TABLES DE FAITS ---------------------------------------------------------
 
-
--- ---- FAIT_CARTE : grain = une carte de pêche, pour une année ----------------
---
---   ATTENTION — FAIT_CARTE EST UN AGRÉGAT.
---   Ses mesures sont la somme des campagnes rattachées à la carte. Ne JAMAIS
---   additionner FAIT_CARTE.recette et FAIT_CAMPAGNE.recette : le même chiffre
---   d'affaires serait compté deux fois. Utilisez l'une ou l'autre selon le
---   grain de la question, jamais les deux dans la même somme.
-
+-- Grain : une carte de peche.
+-- AGREGAT : ses mesures somment les campagnes de la carte. Ne jamais
+-- additionner FAIT_CARTE.carte_recette et FAIT_CAMPAGNE.campagne_recette.
 CREATE TABLE FAIT_CARTE (
     carte_id             VARCHAR(255) NOT NULL PRIMARY KEY,
     carte_key            INT NOT NULL,
@@ -490,7 +388,7 @@ INSERT INTO FAIT_CARTE (carte_id, carte_key, temps_key, capitaine_key,
                         carte_tonnage_epe)
 SELECT p.carte_id,
        ISNULL(dc.carte_key, -1),
-       -- une date hors du calendrier bascule sur le membre inconnu
+       -- hors des bornes du calendrier : membre inconnu
        CASE WHEN p.carte_date_delivrance IS NOT NULL
              AND YEAR(p.carte_date_delivrance) BETWEEN 1990 AND 2030
             THEN CONVERT(INT, FORMAT(p.carte_date_delivrance, 'yyyyMMdd'))
@@ -501,7 +399,6 @@ SELECT p.carte_id,
        ISNULL(dcom.commune_key, -1),
        p.carte_benefice, p.carte_depense, p.carte_recette, p.carte_rendement,
        p.carte_carburant_qte,
-       -- un compteur de marées négatif est une saisie fautive
        CASE WHEN p.carte_maree >= 0 THEN p.carte_maree END,
        p.carte_tonnage_epe
 FROM peche_nc.env_mer.pecheur_anonymise p
@@ -513,8 +410,7 @@ LEFT JOIN DIM_COMMUNE  dcom ON dcom.commune = LTRIM(RTRIM(p.capitaine_commune));
 GO
 
 
--- ---- FAIT_CAMPAGNE : grain = une campagne (une sortie) ----------------------
-
+-- Grain : une campagne.
 CREATE TABLE FAIT_CAMPAGNE (
     campagne_id               VARCHAR(255) NOT NULL PRIMARY KEY,
     carte_key                 INT NOT NULL,
@@ -557,8 +453,7 @@ SELECT c.campagne_id,
              AND YEAR(c.campagne_date_fin) BETWEEN 1990 AND 2030
             THEN CONVERT(INT, FORMAT(c.campagne_date_fin, 'yyyyMMdd'))
             ELSE -1 END,
-       -- durée neutralisée si la fin précède le début : cela relève du
-       -- rapport d'anomalies, pas d'une valeur négative absurde
+       -- duree NULL si la fin precede le debut, plutot qu'une valeur negative
        CASE WHEN c.campagne_date_fin IS NULL OR c.campagne_date_debut IS NULL
             THEN NULL
             WHEN c.campagne_date_fin < c.campagne_date_debut THEN NULL
@@ -576,13 +471,11 @@ LEFT JOIN FAIT_CARTE fc ON fc.carte_id = c.campagne_carte_id;
 GO
 
 
--- ---- FAIT_CAPTURE : grain = une espèce capturée lors d'une campagne ---------
--- La zone n'y figure PAS : une capture en porte jusqu'à 6, l'y mettre
--- multiplierait la ligne et donc le poids. Voir PONT_CAPTURE_ZONE.
-
+-- Grain : une espece capturee. La zone n'y figure pas : une capture en porte
+-- jusqu'a 6, l'ajouter multiplierait le poids. Voir PONT_CAPTURE_ZONE.
 CREATE TABLE FAIT_CAPTURE (
     capture_id                 VARCHAR(255) NOT NULL PRIMARY KEY,
-    campagne_id                VARCHAR(255) NULL,   -- dimension dégénérée
+    campagne_id                VARCHAR(255) NULL,   -- dimension degeneree
     carte_key                  INT NOT NULL,
     navire_key                 INT NOT NULL,
     temps_key                  INT NOT NULL,
@@ -602,8 +495,7 @@ SELECT cap.capture_id,
        cap.capture_campagne_id,
        ISNULL(fca.carte_key, -1),
        ISNULL(fca.navire_key, -1),
-       -- la capture n'a pas de date propre : on prend celle de sa campagne
-       ISNULL(fca.temps_debut_key, -1),
+       ISNULL(fca.temps_debut_key, -1),   -- pas de date propre a la capture
        ISNULL(de.espece_key, -1),
        ISNULL(dt.technique_key, -1),
        cap.capture_nombre, cap.capture_poids_entier_total,
@@ -619,10 +511,8 @@ LEFT JOIN DIM_TECHNIQUE dt
 GO
 
 
--- ---- FAIT_FRAIS : grain = un poste de dépense d'une campagne ----------------
--- Déjà à ce grain dans l'ODS. Clé primaire ajoutée : sans elle, un
--- rechargement doublerait les montants sans que rien ne le signale.
-
+-- Grain : un poste de depense d'une campagne. La cle primaire evite qu'un
+-- rechargement double les montants.
 CREATE TABLE FAIT_FRAIS (
     campagne_id   VARCHAR(255) NOT NULL,
     frais_id      VARCHAR(255) NOT NULL,
@@ -647,17 +537,10 @@ LEFT JOIN FAIT_CAMPAGNE fca ON fca.campagne_id = cf.campagne_id;
 GO
 
 
--- ============================================================================
--- 3. TABLES DE PONT  (relations plusieurs-à-plusieurs)
--- ============================================================================
+-- 3. TABLES DE PONT ----------------------------------------------------------
 
-
--- ---- PONT_CAPTURE_ZONE ------------------------------------------------------
--- LE POINT LE PLUS IMPORTANT DE CE SCRIPT.
--- Une capture peut être déclarée sur plusieurs zones — jusqu'à 6 dans les
--- données réelles. Un pont sans pondération compterait son poids une fois par
--- zone : le total national serait faux, et rien ne le signalerait.
--- Le facteur (1/nb_zones) rend l'agrégation juste :
+-- facteur = 1/nb_zones : sans ponderation, le poids d'une capture serait
+-- compte une fois par zone.
 --
 --   SELECT z.label, SUM(f.capture_poids_entier_total * p.facteur)
 --   FROM FAIT_CAPTURE f
@@ -665,12 +548,7 @@ GO
 --   JOIN DIM_ZONE_PECHE   z ON z.zone_key    = p.zone_key
 --   GROUP BY z.label;
 --
--- Pour un total national, interroger FAIT_CAPTURE seule, sans passer par le
--- pont : la somme y est déjà complète.
---
--- À savoir : seules 20 271 captures sur 145 387 (14 %) portent une zone.
--- Toute analyse spatiale ne porte donc que sur ce septième des captures.
-
+-- Pour un total sans ventilation, interroger FAIT_CAPTURE seule.
 CREATE TABLE PONT_CAPTURE_ZONE (
     capture_id VARCHAR(255) NOT NULL,
     zone_key   INT          NOT NULL,
@@ -695,9 +573,6 @@ LEFT JOIN DIM_ZONE_PECHE z ON z.zone_peche_id = cz.zone_peche_id;
 GO
 
 
--- ---- PONT_CARTE_PECHERIE ----------------------------------------------------
--- Une carte peut autoriser plusieurs pêcheries spécifiques.
-
 CREATE TABLE PONT_CARTE_PECHERIE (
     carte_key    INT NOT NULL,
     pecherie_key INT NOT NULL,
@@ -712,14 +587,11 @@ LEFT JOIN DIM_PECHERIE dp ON dp.code     = cps.code;
 GO
 
 
--- ============================================================================
--- 4. INDEX
--- ============================================================================
--- Sur les colonnes portantes des faits : indispensables aux jointures.
--- Si l'instance manque de mémoire, ces CREATE INDEX attendent indéfiniment
--- (wait_type RESOURCE_SEMAPHORE). Vérifier la cible mémoire avant :
---     SELECT committed_target_kb/1024 AS cible_mo FROM sys.dm_os_sys_info;
+-- 4. INDEX -------------------------------------------------------------------
 
+-- Sur une instance a court de memoire ces CREATE INDEX attendent
+-- indefiniment (wait_type RESOURCE_SEMAPHORE). Verifier la cible :
+--     SELECT committed_target_kb/1024 AS cible_mo FROM sys.dm_os_sys_info;
 CREATE INDEX IX_FAIT_CARTE_temps      ON FAIT_CARTE (temps_key);
 CREATE INDEX IX_FAIT_CARTE_navire     ON FAIT_CARTE (navire_key);
 CREATE INDEX IX_FAIT_CAMPAGNE_carte   ON FAIT_CAMPAGNE (carte_key);
@@ -732,11 +604,7 @@ CREATE INDEX IX_PONT_ZONE_zone        ON PONT_CAPTURE_ZONE (zone_key);
 GO
 
 
--- ============================================================================
--- 5. VÉRIFICATIONS
--- ============================================================================
--- Volumes attendus au 28/09/2026 : 3 550 cartes, 63 856 campagnes,
--- 145 387 captures, 830 128 frais, 24 831 lignes de pont.
+-- 5. VERIFICATIONS -----------------------------------------------------------
 
 SELECT 'DIM_TEMPS' AS objet, COUNT(*) AS lignes FROM DIM_TEMPS
 UNION ALL SELECT 'DIM_COMMUNE',         COUNT(*) FROM DIM_COMMUNE
@@ -756,9 +624,7 @@ UNION ALL SELECT 'PONT_CAPTURE_ZONE',   COUNT(*) FROM PONT_CAPTURE_ZONE
 UNION ALL SELECT 'PONT_CARTE_PECHERIE', COUNT(*) FROM PONT_CARTE_PECHERIE
 ORDER BY objet;
 
--- Aucun fait ne doit pointer vers un membre inconnu par accident.
--- Quelques -1 sont normaux (dates absentes, navire non déclaré) ; un
--- pourcentage élevé signale une jointure ratée.
+-- Quelques -1 sont normaux ; un taux eleve signale une jointure ratee.
 SELECT 'FAIT_CAMPAGNE.carte_key = -1'   AS controle,
        SUM(CASE WHEN carte_key = -1 THEN 1 ELSE 0 END) AS inconnus,
        COUNT(*) AS total FROM FAIT_CAMPAGNE
@@ -772,14 +638,14 @@ UNION ALL
 SELECT 'FAIT_CAMPAGNE.temps_debut_key = -1',
        SUM(CASE WHEN temps_debut_key = -1 THEN 1 ELSE 0 END), COUNT(*) FROM FAIT_CAMPAGNE;
 
--- Le pont doit répartir exactement 100 % de chaque capture concernée.
+-- La somme des facteurs doit valoir 1 pour chaque capture ventilee.
 SELECT COUNT(*) AS captures_mal_reparties
 FROM (SELECT capture_id, SUM(facteur) AS s
       FROM PONT_CAPTURE_ZONE GROUP BY capture_id) x
 WHERE ABS(x.s - 1.0) > 0.000001;
 
--- Contrôle de non-double-comptage : la recette agrégée de FAIT_CARTE doit
--- rester proche de la somme des campagnes de la même carte.
+-- FAIT_CARTE etant un agregat, sa recette doit rester proche de la somme des
+-- campagnes de la meme carte.
 SELECT COUNT(*) AS cartes_en_ecart
 FROM FAIT_CARTE fc
 JOIN (SELECT carte_key, SUM(campagne_recette) AS recette
