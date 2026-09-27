@@ -1,0 +1,310 @@
+-- ============================================================================
+-- CONSTRUCTION DU DWH — à partir de l'ODS réel "peche_nc.env_mer"
+-- Modèle retenu (SFD §6) : constellation à 4 tables de faits.
+-- Aucune contrainte d'intégrité dans le DWH (choix assumé, cf. §9.6 conservé
+-- de la version précédente du projet)
+-- ============================================================================
+
+CREATE DATABASE PecheDWH;
+GO
+USE PecheDWH;
+GO
+
+
+-- ============================================================================
+-- 1. DIMENSIONS (SFD §6.3)
+-- ============================================================================
+
+-- ---- DIM_TEMPS : dimension neutre unique, alimentée depuis toutes les dates
+-- métier trouvées dans les tables sources
+CREATE TABLE DIM_TEMPS (
+    date_id      DATE PRIMARY KEY,
+    jour         INT,
+    mois         INT,
+    trimestre    INT,
+    annee        INT,
+    libelle_mois NVARCHAR(20)
+);
+
+INSERT INTO DIM_TEMPS (date_id, jour, mois, trimestre, annee, libelle_mois)
+SELECT DISTINCT d, DAY(d), MONTH(d), DATEPART(QUARTER, d), YEAR(d), DATENAME(MONTH, d)
+FROM (
+    SELECT capitaine_date_naissance AS d FROM peche_nc.env_mer.pecheur_anonymise WHERE capitaine_date_naissance IS NOT NULL
+    UNION SELECT patron_pecheur_date_naissance FROM peche_nc.env_mer.pecheur_anonymise WHERE patron_pecheur_date_naissance IS NOT NULL
+    UNION SELECT carte_date_delivrance FROM peche_nc.env_mer.pecheur_anonymise WHERE carte_date_delivrance IS NOT NULL
+    UNION SELECT carte_autorisation_date_delivrance FROM peche_nc.env_mer.pecheur_anonymise WHERE carte_autorisation_date_delivrance IS NOT NULL
+    UNION SELECT campagne_date_debut FROM peche_nc.env_mer.campagne_peche WHERE campagne_date_debut IS NOT NULL
+    UNION SELECT campagne_date_fin FROM peche_nc.env_mer.campagne_peche WHERE campagne_date_fin IS NOT NULL
+) AS toutes_dates;
+
+
+-- ---- DIM_PERSONNE : fusion capitaine + patron pêcheur, dédoublonnée
+CREATE TABLE DIM_PERSONNE (
+    personne_id     VARCHAR(255) PRIMARY KEY,
+    commune         NVARCHAR(4000),
+    date_naissance  DATE,
+    sexe            NVARCHAR(255)
+);
+
+INSERT INTO DIM_PERSONNE (personne_id, commune, date_naissance, sexe)
+SELECT capitaine_id, MAX(capitaine_commune), MAX(capitaine_date_naissance), MAX(capitaine_sexe)
+FROM peche_nc.env_mer.pecheur_anonymise
+WHERE capitaine_id IS NOT NULL
+GROUP BY capitaine_id
+UNION
+SELECT patron_pecheur_id, MAX(patron_pecheur_commune), MAX(patron_pecheur_date_naissance), MAX(patron_pecheur_sexe)
+FROM peche_nc.env_mer.pecheur_anonymise
+WHERE patron_pecheur_id IS NOT NULL
+  AND patron_pecheur_id NOT IN (SELECT personne_id FROM DIM_PERSONNE)
+GROUP BY patron_pecheur_id;
+
+
+-- ---- DIM_CARTE : attributs descriptifs de la carte (pas les mesures)
+CREATE TABLE DIM_CARTE (
+    carte_id                    VARCHAR(255) PRIMARY KEY,
+    carte_type                  VARCHAR(255),
+    carte_annee                 VARCHAR(255),
+    carte_renouvellement        BIT,
+    carte_autorisation_statut   VARCHAR(255),
+    carte_autorisation_annee    VARCHAR(255),
+    carte_autorisation_commune  NVARCHAR(4000),
+    carte_autorisation_province NVARCHAR(4000)
+);
+
+INSERT INTO DIM_CARTE
+SELECT carte_id, carte_type, carte_annee, carte_renouvellement, carte_autorisation_statut,
+       carte_autorisation_annee, carte_autorisation_commune, carte_autorisation_province
+FROM peche_nc.env_mer.pecheur_anonymise;
+
+
+-- ---- DIM_NAVIRE
+CREATE TABLE DIM_NAVIRE (
+    navire_id             VARCHAR(255) PRIMARY KEY,
+    annee_construction    INT,            -- converti depuis VARCHAR source
+    longueur              FLOAT,
+    jauge_brute           FLOAT,
+    origine               VARCHAR(255),
+    categorie_navigation  NVARCHAR(4000),
+    materiau              NVARCHAR(4000),
+    constructeur          NVARCHAR(4000)
+);
+
+INSERT INTO DIM_NAVIRE
+SELECT navire_id,
+       TRY_CONVERT(INT, navire_annee_construction),  -- NULL si non numérique/absent
+       navire_longueur, navire_jauge_brute, navire_origine,
+       categorie_navigation, materiau, constructeur
+FROM peche_nc.env_mer.navire_peche_anonymise;
+
+
+-- ---- DIM_MOTEUR (rattachée à navire, un navire peut avoir plusieurs moteurs)
+CREATE TABLE DIM_MOTEUR (
+    moteur_id  VARCHAR(255) PRIMARY KEY,
+    navire_id  VARCHAR(255),
+    usage_moteur NVARCHAR(4000),
+    marque     NVARCHAR(4000),
+    carburant  VARCHAR(255)
+);
+
+INSERT INTO DIM_MOTEUR
+SELECT moteur_id, navire_id, usage, marque, carburant
+FROM peche_nc.env_mer.navire_moteur;
+
+
+-- ---- DIM_ESPECE : catégorie + produit (SFD : hiérarchie Catégorie -> Produit)
+CREATE TABLE DIM_ESPECE (
+    categorie_code  VARCHAR(255),
+    categorie_nom   VARCHAR(255),
+    produit         NVARCHAR(4000),
+    CONSTRAINT pk_dim_espece PRIMARY KEY (categorie_code, produit)
+);
+
+INSERT INTO DIM_ESPECE (categorie_code, categorie_nom, produit)
+SELECT DISTINCT capture_categorie_code, capture_categorie_nom, capture_produit
+FROM peche_nc.env_mer.capture_peche
+WHERE capture_categorie_code IS NOT NULL;
+
+
+-- ---- DIM_TECHNIQUE
+CREATE TABLE DIM_TECHNIQUE (
+    technique       NVARCHAR(4000),
+    transformation  NVARCHAR(4000)
+);
+
+INSERT INTO DIM_TECHNIQUE
+SELECT DISTINCT capture_technique, capture_transformation
+FROM peche_nc.env_mer.capture_peche;
+
+
+-- ---- DIM_ZONE_PECHE : pas de référentiel dans l'ODS source (le README le
+-- précise), on la reconstruit par déduplication depuis capture_zone
+CREATE TABLE DIM_ZONE_PECHE (
+    zone_peche_id  VARCHAR(255) PRIMARY KEY,
+    label          NVARCHAR(4000)
+);
+
+INSERT INTO DIM_ZONE_PECHE
+SELECT zone_peche_id, MAX(label)
+FROM peche_nc.env_mer.capture_zone
+GROUP BY zone_peche_id;
+
+
+-- ---- DIM_CARROYAGE ------
+CREATE TABLE DIM_CARROYAGE (
+    carroyage_id           INT PRIMARY KEY,
+    commune                VARCHAR(50),
+    eth                    VARCHAR(50),
+    zone_ancienne          VARCHAR(50),
+    zone_nouvelle          VARCHAR(50),
+    zone_peche_id_associe  VARCHAR(255)
+);
+
+INSERT INTO DIM_CARROYAGE
+SELECT carroyage_id, carroyage_commune, carroyage_eth,
+       carroyage_zone_peche, carroyage_nouvelle_zone_peche, coarroyage_zone_peche_id
+FROM peche_nc.env_mer.carroyage_peche;
+
+
+-- ============================================================================
+-- 2. TABLES DE FAITS (SFD §6.5)
+-- ============================================================================
+
+-- ---- FAIT_CARTE : grain = une carte de pêche
+CREATE TABLE FAIT_CARTE (
+    carte_id             VARCHAR(255) PRIMARY KEY,
+    capitaine_id         VARCHAR(255),
+    patron_pecheur_id    VARCHAR(255),
+    navire_id            VARCHAR(255),
+    date_delivrance      DATE,
+    carte_benefice       FLOAT,
+    carte_depense        FLOAT,
+    carte_recette        FLOAT,
+    carte_rendement      FLOAT,
+    carte_carburant_qte  FLOAT,
+    carte_maree          INT,
+    carte_tonnage_epe    FLOAT
+);
+
+INSERT INTO FAIT_CARTE
+SELECT carte_id, capitaine_id, patron_pecheur_id, carte_autorisation_navire_id,
+       carte_date_delivrance, carte_benefice, carte_depense, carte_recette,
+       carte_rendement, carte_carburant_qte, carte_maree, carte_tonnage_epe
+FROM peche_nc.env_mer.pecheur_anonymise;
+
+
+-- ---- FAIT_CAMPAGNE : grain = une campagne / sortie
+CREATE TABLE FAIT_CAMPAGNE (
+    campagne_id             VARCHAR(255) PRIMARY KEY,
+    carte_id                VARCHAR(255),
+    date_debut              DATE,
+    date_fin                DATE,
+    -- durée neutralisée (NULL) si la fin précède le début : cf. rapport
+    -- d'anomalies plutôt qu'une valeur négative absurde
+    duree_jours             INT,
+    campagne_benefice       FLOAT,
+    campagne_depense        FLOAT,
+    campagne_recette        FLOAT,
+    campagne_rendement      FLOAT,
+    campagne_carburant_qte  FLOAT,
+    campagne_charges_sociales FLOAT,
+    campagne_jours_mer      FLOAT,
+    campagne_jours_peche    FLOAT,
+    campagne_nbre_equipage  FLOAT,
+    campagne_nbr_femme_abord INT,
+    campagne_salaire_matelots FLOAT,
+    campagne_salaire_patron FLOAT,
+    campagne_tonnage_epe    FLOAT
+);
+
+INSERT INTO FAIT_CAMPAGNE
+SELECT campagne_id, campagne_carte_id, campagne_date_debut, campagne_date_fin,
+       CASE
+           WHEN campagne_date_fin IS NULL OR campagne_date_debut IS NULL THEN NULL
+           WHEN campagne_date_fin < campagne_date_debut THEN NULL
+           ELSE DATEDIFF(DAY, campagne_date_debut, campagne_date_fin)
+       END,
+       campagne_benefice, campagne_depense, campagne_recette, campagne_rendement,
+       campagne_carburant_qte, campagne_charges_sociales,
+       campagne_jours_mer, campagne_jours_peche, campagne_nbre_equipage,
+       campagne_nbr_femme_abord, campagne_salaire_matelots, campagne_salaire_patron,
+       campagne_tonnage_epe
+FROM peche_nc.env_mer.campagne_peche;
+
+
+-- ---- FAIT_CAPTURE : grain = une capture
+CREATE TABLE FAIT_CAPTURE (
+    capture_id                  VARCHAR(255) PRIMARY KEY,
+    campagne_id                 VARCHAR(255),
+    categorie_code               VARCHAR(255),
+    produit                      NVARCHAR(4000),
+    technique                    NVARCHAR(4000),
+    capture_nombre               FLOAT,
+    capture_poids_entier_total  FLOAT,
+    capture_poids_transf_total  FLOAT,
+    capture_valeurxpf            FLOAT
+);
+
+INSERT INTO FAIT_CAPTURE
+SELECT capture_id, capture_campagne_id, capture_categorie_code, capture_produit,
+       capture_technique, capture_nombre, capture_poids_entier_total,
+       capture_poids_transf_total, capture_valeurxpf
+FROM peche_nc.env_mer.capture_peche;
+
+
+-- ---- FAIT_FRAIS : grain = un frais associé à une campagne
+-- Déjà exactement à ce grain dans l'ODS (table campagne_frais) : reprise
+-- quasi directe, on ajoute juste le libellé lisible de la nature du frais.
+CREATE TABLE FAIT_FRAIS (
+    campagne_id    VARCHAR(255),
+    frais_id       VARCHAR(255),
+    nature_frais   VARCHAR(255),
+    montant        FLOAT
+);
+
+INSERT INTO FAIT_FRAIS
+SELECT cf.campagne_id, cf.frais_id, f.libelle, cf.montant
+FROM peche_nc.env_mer.campagne_frais cf
+JOIN peche_nc.env_mer.frais f ON cf.frais_id = f.frais_id;
+
+
+-- ============================================================================
+-- 3. TABLES DE PONT (relations plusieurs-à-plusieurs)
+-- ============================================================================
+
+CREATE TABLE PONT_CAPTURE_ZONE (
+    capture_id     VARCHAR(255),
+    zone_peche_id  VARCHAR(255)
+);
+INSERT INTO PONT_CAPTURE_ZONE
+SELECT capture_id, zone_peche_id FROM peche_nc.env_mer.capture_zone;
+
+CREATE TABLE PONT_CARTE_ESPECE (
+    carte_id  VARCHAR(255),
+    code      VARCHAR(255)
+);
+INSERT INTO PONT_CARTE_ESPECE
+SELECT carte_id, code FROM peche_nc.env_mer.carte_pecherie_specifique;
+
+
+-- ============================================================================
+-- 4. VÉRIFICATIONS
+-- ============================================================================
+SELECT 'DIM_TEMPS' AS t, COUNT(*) FROM DIM_TEMPS
+UNION ALL SELECT 'DIM_PERSONNE', COUNT(*) FROM DIM_PERSONNE
+UNION ALL SELECT 'DIM_CARTE', COUNT(*) FROM DIM_CARTE
+UNION ALL SELECT 'DIM_NAVIRE', COUNT(*) FROM DIM_NAVIRE
+UNION ALL SELECT 'DIM_MOTEUR', COUNT(*) FROM DIM_MOTEUR
+UNION ALL SELECT 'DIM_ESPECE', COUNT(*) FROM DIM_ESPECE
+UNION ALL SELECT 'DIM_TECHNIQUE', COUNT(*) FROM DIM_TECHNIQUE
+UNION ALL SELECT 'DIM_ZONE_PECHE', COUNT(*) FROM DIM_ZONE_PECHE
+UNION ALL SELECT 'DIM_CARROYAGE', COUNT(*) FROM DIM_CARROYAGE
+UNION ALL SELECT 'FAIT_CARTE', COUNT(*) FROM FAIT_CARTE
+UNION ALL SELECT 'FAIT_CAMPAGNE', COUNT(*) FROM FAIT_CAMPAGNE
+UNION ALL SELECT 'FAIT_CAPTURE', COUNT(*) FROM FAIT_CAPTURE
+UNION ALL SELECT 'FAIT_FRAIS', COUNT(*) FROM FAIT_FRAIS;
+
+-- Orphelins : toute campagne doit avoir une carte dans DIM_CARTE
+SELECT COUNT(*) AS campagnes_orphelines
+FROM FAIT_CAMPAGNE fc
+LEFT JOIN DIM_CARTE dc ON fc.carte_id = dc.carte_id
+WHERE dc.carte_id IS NULL;
