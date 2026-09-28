@@ -86,8 +86,14 @@ Le script `src/DWH_peche_nc` construit la base `PecheDWH` à partir de l'ODS
 et se rejoue sans précaution : les tables sont retirées dans l'ordre inverse
 des dépendances puis reconstruites.
 
+Il **initialise** le DWH. Reconstruisant tout à chaque exécution, il ne
+conserve aucun historique : ni date d'intégration, ni distinction entre
+lignes nouvelles, modifiées et inchangées. L'alimentation incrémentale prévue
+par le SFD reste à écrire, et ce script ne convient pas aux chargements
+courants.
+
 Le modèle est une constellation : quatre tables de faits à des grains
-différents, dix dimensions partagées et deux tables de pont.
+différents, onze dimensions partagées et deux tables de pont.
 
 | Table de faits | Grain |
 |---|---|
@@ -100,6 +106,23 @@ Chaque dimension porte une clé de substitution et un membre inconnu de clé
 `-1`. Les faits ne contiennent donc jamais de `NULL` en clé étrangère, et
 aucune jointure ne perd de lignes en silence. Les clés métier restent en
 attribut pour pouvoir remonter à la source.
+
+Le détail de la motorisation vit dans `DIM_MOTEUR`, rattachée au navire :
+certains navires portent plusieurs moteurs, et n'en retenir qu'un perdrait
+l'information. `DIM_NAVIRE` ne garde que `nb_moteurs`.
+
+### L'axe navire est indicatif
+
+Les faits portent un `navire_key` dérivé de
+`pecheur_anonymise.carte_autorisation_navire_id`. Cette colonne désigne le
+navire **autorisé sur la carte**, et non celui qui a réellement effectué la
+campagne. Le SFD constate qu'aucune relation fiable entre pêcheurs et navires
+n'existe dans les sources, et met hors périmètre V1 les indicateurs qui en
+dépendent — frais d'entretien par navire, navires par pêcheur, rentabilité
+par navire.
+
+L'axe est conservé pour ne pas perdre l'information, mais toute restitution
+par navire doit rappeler cette limite.
 
 ### Deux pièges à connaître avant d'interroger
 
