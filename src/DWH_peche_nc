@@ -546,12 +546,22 @@ SELECT cap.capture_id,
        cap.capture_poids_transf_total, cap.capture_valeurxpf
 FROM peche_nc.env_mer.capture_peche cap
 LEFT JOIN FAIT_CAMPAGNE fca ON fca.campagne_id = cap.capture_campagne_id
+-- Jointures null-safe. En SQL, NULL = NULL n'est pas vrai : une egalite
+-- simple rejetterait les combinaisons dont un membre est NULL, alors
+-- qu'elles existent bien dans la dimension, et la capture tomberait sur le
+-- membre inconnu a tort. 1 086 captures ont technique ou transformation a
+-- NULL ; produit et categorie_code n'en ont aucune aujourd'hui, mais la
+-- meme precaution y evite une regression silencieuse au prochain chargement.
 LEFT JOIN DIM_ESPECE de
-       ON de.categorie_code = cap.capture_categorie_code
-      AND de.produit = LEFT(cap.capture_produit, 400)
+       ON (de.categorie_code = cap.capture_categorie_code
+           OR (de.categorie_code IS NULL AND cap.capture_categorie_code IS NULL))
+      AND (de.produit = LEFT(cap.capture_produit, 400)
+           OR (de.produit IS NULL AND cap.capture_produit IS NULL))
 LEFT JOIN DIM_TECHNIQUE dt
-       ON dt.technique = LEFT(cap.capture_technique, 200)
-      AND dt.transformation = LEFT(cap.capture_transformation, 200);
+       ON (dt.technique = LEFT(cap.capture_technique, 200)
+           OR (dt.technique IS NULL AND cap.capture_technique IS NULL))
+      AND (dt.transformation = LEFT(cap.capture_transformation, 200)
+           OR (dt.transformation IS NULL AND cap.capture_transformation IS NULL));
 GO
 
 
@@ -683,6 +693,18 @@ SELECT 'FAIT_CAPTURE.technique_key = -1',
 UNION ALL
 SELECT 'FAIT_CAMPAGNE.temps_debut_key = -1',
        SUM(CASE WHEN temps_debut_key = -1 THEN 1 ELSE 0 END), COUNT(*) FROM FAIT_CAMPAGNE;
+
+-- Une capture dont la technique existe en dimension ne doit pas tomber sur le
+-- membre inconnu : ce controle attrape une jointure redevenue non null-safe.
+SELECT COUNT(*) AS captures_mal_rattachees
+FROM FAIT_CAPTURE f
+JOIN peche_nc.env_mer.capture_peche s ON s.capture_id = f.capture_id
+WHERE f.technique_key = -1
+  AND EXISTS (SELECT 1 FROM DIM_TECHNIQUE d
+              WHERE (d.technique = LEFT(s.capture_technique, 200)
+                     OR (d.technique IS NULL AND s.capture_technique IS NULL))
+                AND (d.transformation = LEFT(s.capture_transformation, 200)
+                     OR (d.transformation IS NULL AND s.capture_transformation IS NULL)));
 
 -- Le grain de DIM_PERSONNE doit etre strictement la personne.
 SELECT COUNT(*) AS personnes_en_double
