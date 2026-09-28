@@ -1,4 +1,4 @@
--- Construction du DWH "PecheDWH" depuis l'ODS "peche_nc.env_mer".
+﻿-- Construction du DWH "PecheDWH" depuis l'ODS "peche_nc.env_mer".
 -- Constellation : 4 tables de faits, 11 dimensions, 2 tables de pont.
 -- Chaque dimension porte une cle de substitution et un membre inconnu de
 -- cle -1 : aucun NULL en cle etrangere, aucune jointure ne perd de lignes.
@@ -81,7 +81,7 @@ INSERT INTO DIM_TEMPS (temps_key, date_id, jour, mois, trimestre, annee,
 SELECT CONVERT(INT, FORMAT(d, 'yyyyMMdd')), d,
        DAY(d), MONTH(d), DATEPART(QUARTER, d), YEAR(d),
        DATENAME(MONTH, d), DATENAME(WEEKDAY, d),
-       CASE WHEN MONTH(d) IN (12,1,2) THEN 'Été'     -- hemisphere sud
+       CASE WHEN MONTH(d) IN (12,1,2) THEN N'Été'     -- hemisphere sud
             WHEN MONTH(d) IN (3,4,5)  THEN 'Automne'
             WHEN MONTH(d) IN (6,7,8)  THEN 'Hiver'
             ELSE 'Printemps' END
@@ -96,7 +96,7 @@ CREATE TABLE DIM_COMMUNE (
 );
 
 SET IDENTITY_INSERT DIM_COMMUNE ON;
-INSERT INTO DIM_COMMUNE (commune_key, commune) VALUES (-1, 'Non renseignée');
+INSERT INTO DIM_COMMUNE (commune_key, commune) VALUES (-1, N'Non renseignée');
 SET IDENTITY_INSERT DIM_COMMUNE OFF;
 
 -- La commune apparait dans trois colonnes sources.
@@ -236,8 +236,8 @@ SELECT n.navire_id,
        CASE WHEN n.navire_longueur > 0 THEN n.navire_longueur END,
        CASE WHEN n.navire_longueur IS NULL OR n.navire_longueur <= 0 THEN 'Inconnue'
             WHEN n.navire_longueur <  6 THEN 'Moins de 6 m'
-            WHEN n.navire_longueur < 10 THEN '6 à 10 m'
-            WHEN n.navire_longueur < 15 THEN '10 à 15 m'
+            WHEN n.navire_longueur < 10 THEN N'6 à 10 m'
+            WHEN n.navire_longueur < 15 THEN N'10 à 15 m'
             ELSE '15 m et plus' END,
        CASE WHEN n.navire_jauge_brute > 0 THEN n.navire_jauge_brute END,
        n.navire_origine, n.categorie_navigation, n.materiau, n.constructeur,
