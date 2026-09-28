@@ -152,11 +152,22 @@ spatiales.
 
 ### Contrôles
 
-La fin du script compte les lignes de chaque table, mesure la part de membres
-inconnus dans les faits, vérifie que les facteurs du pont somment bien à 1 par
-capture, et compare `FAIT_CARTE` à la somme des campagnes correspondantes. Un
-taux élevé de clés `-1` signale une jointure ratée plutôt qu'une donnée
-manquante.
+La fin du script enchaîne cinq contrôles :
+
+- le nombre de lignes de chaque table ;
+- la part de membres inconnus dans les faits — quelques `-1` sont normaux, un
+  taux élevé signale une jointure ratée plutôt qu'une donnée manquante ;
+- les captures posées sur `technique_key = -1` **alors que leur combinaison
+  existe en dimension**. En SQL, `NULL = NULL` n'est pas vrai : une jointure
+  qui n'anticipe pas ce cas écarte les combinaisons dont un membre est nul, et
+  la capture tombe sur l'inconnu à tort ;
+- le grain de `DIM_PERSONNE`, qui doit être strictement la personne : un
+  doublon y ferait enfler la jointure de `FAIT_CARTE` jusqu'à violer sa clé
+  primaire ;
+- la somme des facteurs du pont, qui doit valoir 1 par capture ventilée, et
+  l'écart entre `FAIT_CARTE` et la somme des campagnes correspondantes.
+
+Ces quatre derniers renvoient `0` quand tout va bien.
 
 Les `CREATE INDEX` de la fin demandent de la mémoire. Sur une instance qui en
 manque, ils attendent indéfiniment avec un `wait_type` à `RESOURCE_SEMAPHORE` ;
