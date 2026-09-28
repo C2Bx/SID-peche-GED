@@ -79,6 +79,100 @@ Les copies JSON sont écrites progressivement dans `data/raw/`. Pour arrêter la
 base, utiliser `docker compose down`; ajouter `-v` supprime volontairement son
 volume persistant.
 
+## Entrepôt décisionnel
+
+Le script `src/DWH_peche_nc` construit la base `PecheDWH` à partir de l'ODS
+`peche_nc.env_mer`. Il s'exécute dans SSMS, sur l'instance qui héberge l'ODS,
+et se rejoue sans précaution : les tables sont retirées dans l'ordre inverse
+des dépendances puis reconstruites.
+
+Il **initialise** le DWH. Reconstruisant tout à chaque exécution, il ne
+conserve aucun historique : ni date d'intégration, ni distinction entre
+lignes nouvelles, modifiées et inchangées. L'alimentation incrémentale prévue
+par le SFD reste à écrire, et ce script ne convient pas aux chargements
+courants.
+
+Le modèle est une constellation : quatre tables de faits à des grains
+différents, onze dimensions partagées et deux tables de pont.
+
+| Table de faits | Grain |
+|---|---|
+| `FAIT_CARTE` | une carte de pêche |
+| `FAIT_CAMPAGNE` | une campagne, c'est-à-dire une sortie |
+| `FAIT_CAPTURE` | une espèce capturée lors d'une campagne |
+| `FAIT_FRAIS` | un poste de dépense d'une campagne |
+
+Chaque dimension porte une clé de substitution et un membre inconnu de clé
+`-1`. Les faits ne contiennent donc jamais de `NULL` en clé étrangère, et
+aucune jointure ne perd de lignes en silence. Les clés métier restent en
+attribut pour pouvoir remonter à la source.
+
+Le détail de la motorisation vit dans `DIM_MOTEUR`, rattachée au navire :
+certains navires portent plusieurs moteurs, et n'en retenir qu'un perdrait
+l'information. `DIM_NAVIRE` ne garde que `nb_moteurs`.
+
+### L'axe navire est indicatif
+
+Les faits portent un `navire_key` dérivé de
+`pecheur_anonymise.carte_autorisation_navire_id`. Cette colonne désigne le
+navire **autorisé sur la carte**, et non celui qui a réellement effectué la
+campagne. Le SFD constate qu'aucune relation fiable entre pêcheurs et navires
+n'existe dans les sources, et met hors périmètre V1 les indicateurs qui en
+dépendent — frais d'entretien par navire, navires par pêcheur, rentabilité
+par navire.
+
+L'axe est conservé pour ne pas perdre l'information, mais toute restitution
+par navire doit rappeler cette limite.
+
+### Deux pièges à connaître avant d'interroger
+
+`FAIT_CARTE` est un **agrégat** : ses mesures somment les campagnes de la
+carte. Additionner `FAIT_CARTE.carte_recette` et
+`FAIT_CAMPAGNE.campagne_recette` compterait deux fois le même chiffre
+d'affaires. Il faut choisir le grain selon la question posée, jamais les deux
+dans la même somme.
+
+Une capture peut être déclarée sur plusieurs zones de pêche. `FAIT_CAPTURE`
+n'en porte donc aucune, sans quoi la ligne — et le poids avec elle — serait
+multipliée. La ventilation passe par `PONT_CAPTURE_ZONE`, qui porte un
+facteur de répartition valant `1 / nb_zones` :
+
+```sql
+SELECT z.label, SUM(f.capture_poids_entier_total * p.facteur) AS poids
+FROM FAIT_CAPTURE f
+JOIN PONT_CAPTURE_ZONE p ON p.capture_id = f.capture_id
+JOIN DIM_ZONE_PECHE   z ON z.zone_key    = p.zone_key
+GROUP BY z.label;
+```
+
+Pour un total sans ventilation géographique, interroger `FAIT_CAPTURE` seule :
+la somme y est déjà complète. À noter que la zone n'est renseignée que sur une
+minorité des captures, ce qui limite d'autant la portée des analyses
+spatiales.
+
+### Contrôles
+
+La fin du script enchaîne cinq contrôles :
+
+- le nombre de lignes de chaque table ;
+- la part de membres inconnus dans les faits — quelques `-1` sont normaux, un
+  taux élevé signale une jointure ratée plutôt qu'une donnée manquante ;
+- les captures posées sur `technique_key = -1` **alors que leur combinaison
+  existe en dimension**. En SQL, `NULL = NULL` n'est pas vrai : une jointure
+  qui n'anticipe pas ce cas écarte les combinaisons dont un membre est nul, et
+  la capture tombe sur l'inconnu à tort ;
+- le grain de `DIM_PERSONNE`, qui doit être strictement la personne : un
+  doublon y ferait enfler la jointure de `FAIT_CARTE` jusqu'à violer sa clé
+  primaire ;
+- la somme des facteurs du pont, qui doit valoir 1 par capture ventilée, et
+  l'écart entre `FAIT_CARTE` et la somme des campagnes correspondantes.
+
+Ces quatre derniers renvoient `0` quand tout va bien.
+
+Les `CREATE INDEX` de la fin demandent de la mémoire. Sur une instance qui en
+manque, ils attendent indéfiniment avec un `wait_type` à `RESOURCE_SEMAPHORE` ;
+la requête qui permet de le diagnostiquer est en commentaire dans le script.
+
 ## Tests unitaires
 
 ```bash

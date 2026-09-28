@@ -1,310 +1,726 @@
--- ============================================================================
--- CONSTRUCTION DU DWH — à partir de l'ODS réel "peche_nc.env_mer"
--- Modèle retenu (SFD §6) : constellation à 4 tables de faits.
--- Aucune contrainte d'intégrité dans le DWH (choix assumé, cf. §9.6 conservé
--- de la version précédente du projet)
--- ============================================================================
+﻿-- Construction du DWH "PecheDWH" depuis l'ODS "peche_nc.env_mer".
+-- Constellation : 4 tables de faits, 11 dimensions, 2 tables de pont.
+-- Chaque dimension porte une cle de substitution et un membre inconnu de
+-- cle -1 : aucun NULL en cle etrangere, aucune jointure ne perd de lignes.
+--
+-- PORTEE : ce script INITIALISE le DWH. Il reconstruit tout a chaque
+-- execution et ne conserve donc aucun historique : ni date d'integration, ni
+-- distinction entre lignes nouvelles, modifiees et inchangees. L'alimentation
+-- incrementale prevue par le SFD reste a ecrire ; ne pas utiliser ce script
+-- pour les chargements courants.
+--
+-- HYPOTHESE SUR LE RATTACHEMENT AU NAVIRE
+-- Les faits portent un navire_key derive de
+-- pecheur_anonymise.carte_autorisation_navire_id. Cette colonne designe le
+-- navire AUTORISE SUR LA CARTE, et non celui qui a reellement effectue la
+-- campagne : le SFD constate qu'aucune relation fiable entre pecheurs et
+-- navires n'existe dans les sources, et met hors perimetre V1 les indicateurs
+-- qui en dependent (frais d'entretien par navire, navires par pecheur,
+-- rentabilite par navire).
+-- L'axe est conserve ici pour ne pas perdre l'information, mais il est
+-- INDICATIF. Toute restitution par navire doit rappeler cette limite, et
+-- aucun indicateur du SFD ne doit s'appuyer dessus sans validation metier.
 
-CREATE DATABASE PecheDWH;
+
+-- 0. BASE ET REMISE A ZERO ---------------------------------------------------
+
+IF DB_ID('PecheDWH') IS NULL
+    CREATE DATABASE PecheDWH;
 GO
 USE PecheDWH;
 GO
 
+-- Ordre inverse des dependances.
+DROP TABLE IF EXISTS PONT_CAPTURE_ZONE;
+DROP TABLE IF EXISTS PONT_CARTE_PECHERIE;
+DROP TABLE IF EXISTS FAIT_FRAIS;
+DROP TABLE IF EXISTS FAIT_CAPTURE;
+DROP TABLE IF EXISTS FAIT_CAMPAGNE;
+DROP TABLE IF EXISTS FAIT_CARTE;
+DROP TABLE IF EXISTS DIM_CARROYAGE;
+DROP TABLE IF EXISTS DIM_ZONE_PECHE;
+DROP TABLE IF EXISTS DIM_PECHERIE;
+DROP TABLE IF EXISTS DIM_TECHNIQUE;
+DROP TABLE IF EXISTS DIM_ESPECE;
+DROP TABLE IF EXISTS DIM_MOTEUR;
+DROP TABLE IF EXISTS DIM_NAVIRE;
+DROP TABLE IF EXISTS DIM_CARTE;
+DROP TABLE IF EXISTS DIM_COMMUNE;
+DROP TABLE IF EXISTS DIM_PERSONNE;
+DROP TABLE IF EXISTS DIM_TEMPS;
+GO
 
--- ============================================================================
--- 1. DIMENSIONS (SFD §6.3)
--- ============================================================================
 
--- ---- DIM_TEMPS : dimension neutre unique, alimentée depuis toutes les dates
--- métier trouvées dans les tables sources
+-- 1. DIMENSIONS --------------------------------------------------------------
+
+-- Calendrier genere, pas deduit des dates observees : sinon les jours sans
+-- activite manquent et le cumul glissant devient impossible. Cle AAAAMMJJ.
 CREATE TABLE DIM_TEMPS (
-    date_id      DATE PRIMARY KEY,
-    jour         INT,
-    mois         INT,
-    trimestre    INT,
-    annee        INT,
-    libelle_mois NVARCHAR(20)
+    temps_key    INT          NOT NULL PRIMARY KEY,
+    date_id      DATE         NULL,
+    jour         TINYINT      NULL,
+    mois         TINYINT      NULL,
+    trimestre    TINYINT      NULL,
+    annee        SMALLINT     NULL,
+    libelle_mois NVARCHAR(20) NULL,
+    jour_semaine NVARCHAR(20) NULL,
+    saison       NVARCHAR(20) NULL
 );
 
-INSERT INTO DIM_TEMPS (date_id, jour, mois, trimestre, annee, libelle_mois)
-SELECT DISTINCT d, DAY(d), MONTH(d), DATEPART(QUARTER, d), YEAR(d), DATENAME(MONTH, d)
+INSERT INTO DIM_TEMPS (temps_key, date_id, jour, mois, trimestre, annee,
+                       libelle_mois, jour_semaine, saison)
+VALUES (-1, NULL, NULL, NULL, NULL, NULL, 'Inconnu', 'Inconnu', 'Inconnu');
+
+WITH jours AS (
+    SELECT CAST('1990-01-01' AS DATE) AS d
+    UNION ALL
+    SELECT DATEADD(DAY, 1, d) FROM jours WHERE d < '2030-12-31'
+)
+INSERT INTO DIM_TEMPS (temps_key, date_id, jour, mois, trimestre, annee,
+                       libelle_mois, jour_semaine, saison)
+SELECT CONVERT(INT, FORMAT(d, 'yyyyMMdd')), d,
+       DAY(d), MONTH(d), DATEPART(QUARTER, d), YEAR(d),
+       DATENAME(MONTH, d), DATENAME(WEEKDAY, d),
+       CASE WHEN MONTH(d) IN (12,1,2) THEN N'Été'     -- hemisphere sud
+            WHEN MONTH(d) IN (3,4,5)  THEN 'Automne'
+            WHEN MONTH(d) IN (6,7,8)  THEN 'Hiver'
+            ELSE 'Printemps' END
+FROM jours
+OPTION (MAXRECURSION 0);
+GO
+
+
+CREATE TABLE DIM_COMMUNE (
+    commune_key INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+    commune     NVARCHAR(200) NULL
+);
+
+SET IDENTITY_INSERT DIM_COMMUNE ON;
+INSERT INTO DIM_COMMUNE (commune_key, commune) VALUES (-1, N'Non renseignée');
+SET IDENTITY_INSERT DIM_COMMUNE OFF;
+
+-- La commune apparait dans trois colonnes sources.
+INSERT INTO DIM_COMMUNE (commune)
+SELECT DISTINCT LTRIM(RTRIM(c))
 FROM (
-    SELECT capitaine_date_naissance AS d FROM peche_nc.env_mer.pecheur_anonymise WHERE capitaine_date_naissance IS NOT NULL
-    UNION SELECT patron_pecheur_date_naissance FROM peche_nc.env_mer.pecheur_anonymise WHERE patron_pecheur_date_naissance IS NOT NULL
-    UNION SELECT carte_date_delivrance FROM peche_nc.env_mer.pecheur_anonymise WHERE carte_date_delivrance IS NOT NULL
-    UNION SELECT carte_autorisation_date_delivrance FROM peche_nc.env_mer.pecheur_anonymise WHERE carte_autorisation_date_delivrance IS NOT NULL
-    UNION SELECT campagne_date_debut FROM peche_nc.env_mer.campagne_peche WHERE campagne_date_debut IS NOT NULL
-    UNION SELECT campagne_date_fin FROM peche_nc.env_mer.campagne_peche WHERE campagne_date_fin IS NOT NULL
-) AS toutes_dates;
+    SELECT capitaine_commune AS c FROM peche_nc.env_mer.pecheur_anonymise
+    UNION SELECT patron_pecheur_commune FROM peche_nc.env_mer.pecheur_anonymise
+    UNION SELECT carte_autorisation_commune FROM peche_nc.env_mer.pecheur_anonymise
+) AS x
+WHERE c IS NOT NULL AND LTRIM(RTRIM(c)) <> '';
+GO
 
 
--- ---- DIM_PERSONNE : fusion capitaine + patron pêcheur, dédoublonnée
+-- Capitaines et patrons fusionnes, UNE SEULE LIGNE PAR PERSONNE.
+-- Le grain doit etre strictement la personne : les faits joignent sur
+-- personne_id, et un doublon y ferait enfler la jointure jusqu'a violer la
+-- cle primaire de FAIT_CARTE. Grouper sur la commune produisait ce doublon
+-- pour les 3 personnes dont la commune varie d'un role a l'autre ; la
+-- commune est donc agregee comme les autres attributs.
 CREATE TABLE DIM_PERSONNE (
-    personne_id     VARCHAR(255) PRIMARY KEY,
-    commune         NVARCHAR(4000),
-    date_naissance  DATE,
-    sexe            NVARCHAR(255)
+    personne_key    INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+    personne_id     VARCHAR(255)  NULL,
+    commune_key     INT           NOT NULL,
+    date_naissance  DATE          NULL,
+    annee_naissance SMALLINT      NULL,
+    sexe            NVARCHAR(60)  NULL,
+    est_capitaine   BIT           NOT NULL,
+    est_patron      BIT           NOT NULL
 );
 
-INSERT INTO DIM_PERSONNE (personne_id, commune, date_naissance, sexe)
-SELECT capitaine_id, MAX(capitaine_commune), MAX(capitaine_date_naissance), MAX(capitaine_sexe)
-FROM peche_nc.env_mer.pecheur_anonymise
-WHERE capitaine_id IS NOT NULL
-GROUP BY capitaine_id
-UNION
-SELECT patron_pecheur_id, MAX(patron_pecheur_commune), MAX(patron_pecheur_date_naissance), MAX(patron_pecheur_sexe)
-FROM peche_nc.env_mer.pecheur_anonymise
-WHERE patron_pecheur_id IS NOT NULL
-  AND patron_pecheur_id NOT IN (SELECT personne_id FROM DIM_PERSONNE)
-GROUP BY patron_pecheur_id;
+SET IDENTITY_INSERT DIM_PERSONNE ON;
+INSERT INTO DIM_PERSONNE (personne_key, personne_id, commune_key,
+                          date_naissance, annee_naissance, sexe,
+                          est_capitaine, est_patron)
+VALUES (-1, NULL, -1, NULL, NULL, 'Inconnu', 0, 0);
+SET IDENTITY_INSERT DIM_PERSONNE OFF;
+
+WITH roles AS (
+    SELECT capitaine_id AS personne_id, capitaine_commune AS commune,
+           capitaine_date_naissance AS naissance, capitaine_sexe AS sexe,
+           1 AS capitaine, 0 AS patron
+    FROM peche_nc.env_mer.pecheur_anonymise
+    WHERE capitaine_id IS NOT NULL
+    UNION ALL
+    SELECT patron_pecheur_id, patron_pecheur_commune,
+           patron_pecheur_date_naissance, patron_pecheur_sexe, 0, 1
+    FROM peche_nc.env_mer.pecheur_anonymise
+    WHERE patron_pecheur_id IS NOT NULL
+)
+INSERT INTO DIM_PERSONNE (personne_id, commune_key, date_naissance,
+                          annee_naissance, sexe, est_capitaine, est_patron)
+SELECT r.personne_id,
+       MAX(ISNULL(dc.commune_key, -1)),
+       MAX(r.naissance),
+       CASE WHEN YEAR(MAX(r.naissance)) BETWEEN 1900 AND 2030
+            THEN YEAR(MAX(r.naissance)) END,
+       MAX(r.sexe),
+       MAX(r.capitaine), MAX(r.patron)
+FROM roles r
+LEFT JOIN DIM_COMMUNE dc ON dc.commune = LTRIM(RTRIM(r.commune))
+GROUP BY r.personne_id;
+GO
 
 
--- ---- DIM_CARTE : attributs descriptifs de la carte (pas les mesures)
 CREATE TABLE DIM_CARTE (
-    carte_id                    VARCHAR(255) PRIMARY KEY,
-    carte_type                  VARCHAR(255),
-    carte_annee                 VARCHAR(255),
-    carte_renouvellement        BIT,
-    carte_autorisation_statut   VARCHAR(255),
-    carte_autorisation_annee    VARCHAR(255),
-    carte_autorisation_commune  NVARCHAR(4000),
-    carte_autorisation_province NVARCHAR(4000)
+    carte_key                   INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+    carte_id                    VARCHAR(255)  NULL,
+    carte_type                  NVARCHAR(120) NULL,
+    carte_type_source           NVARCHAR(120) NULL,
+    carte_annee                 VARCHAR(20)   NULL,
+    carte_renouvellement        BIT           NULL,
+    carte_autorisation_statut   NVARCHAR(120) NULL,
+    carte_autorisation_annee    VARCHAR(20)   NULL,
+    commune_key                 INT           NOT NULL,
+    carte_autorisation_province NVARCHAR(120) NULL
 );
 
-INSERT INTO DIM_CARTE
-SELECT carte_id, carte_type, carte_annee, carte_renouvellement, carte_autorisation_statut,
-       carte_autorisation_annee, carte_autorisation_commune, carte_autorisation_province
-FROM peche_nc.env_mer.pecheur_anonymise;
+SET IDENTITY_INSERT DIM_CARTE ON;
+INSERT INTO DIM_CARTE (carte_key, carte_id, carte_type, carte_type_source,
+                       commune_key)
+VALUES (-1, NULL, 'Inconnu', NULL, -1);
+SET IDENTITY_INSERT DIM_CARTE OFF;
 
-
--- ---- DIM_NAVIRE
-CREATE TABLE DIM_NAVIRE (
-    navire_id             VARCHAR(255) PRIMARY KEY,
-    annee_construction    INT,            -- converti depuis VARCHAR source
-    longueur              FLOAT,
-    jauge_brute           FLOAT,
-    origine               VARCHAR(255),
-    categorie_navigation  NVARCHAR(4000),
-    materiau              NVARCHAR(4000),
-    constructeur          NVARCHAR(4000)
-);
-
-INSERT INTO DIM_NAVIRE
-SELECT navire_id,
-       TRY_CONVERT(INT, navire_annee_construction),  -- NULL si non numérique/absent
-       navire_longueur, navire_jauge_brute, navire_origine,
-       categorie_navigation, materiau, constructeur
-FROM peche_nc.env_mer.navire_peche_anonymise;
-
-
--- ---- DIM_MOTEUR (rattachée à navire, un navire peut avoir plusieurs moteurs)
-CREATE TABLE DIM_MOTEUR (
-    moteur_id  VARCHAR(255) PRIMARY KEY,
-    navire_id  VARCHAR(255),
-    usage_moteur NVARCHAR(4000),
-    marque     NVARCHAR(4000),
-    carburant  VARCHAR(255)
-);
-
-INSERT INTO DIM_MOTEUR
-SELECT moteur_id, navire_id, usage, marque, carburant
-FROM peche_nc.env_mer.navire_moteur;
-
-
--- ---- DIM_ESPECE : catégorie + produit (SFD : hiérarchie Catégorie -> Produit)
-CREATE TABLE DIM_ESPECE (
-    categorie_code  VARCHAR(255),
-    categorie_nom   VARCHAR(255),
-    produit         NVARCHAR(4000),
-    CONSTRAINT pk_dim_espece PRIMARY KEY (categorie_code, produit)
-);
-
-INSERT INTO DIM_ESPECE (categorie_code, categorie_nom, produit)
-SELECT DISTINCT capture_categorie_code, capture_categorie_nom, capture_produit
-FROM peche_nc.env_mer.capture_peche
-WHERE capture_categorie_code IS NOT NULL;
-
-
--- ---- DIM_TECHNIQUE
-CREATE TABLE DIM_TECHNIQUE (
-    technique       NVARCHAR(4000),
-    transformation  NVARCHAR(4000)
-);
-
-INSERT INTO DIM_TECHNIQUE
-SELECT DISTINCT capture_technique, capture_transformation
-FROM peche_nc.env_mer.capture_peche;
-
-
--- ---- DIM_ZONE_PECHE : pas de référentiel dans l'ODS source (le README le
--- précise), on la reconstruit par déduplication depuis capture_zone
-CREATE TABLE DIM_ZONE_PECHE (
-    zone_peche_id  VARCHAR(255) PRIMARY KEY,
-    label          NVARCHAR(4000)
-);
-
-INSERT INTO DIM_ZONE_PECHE
-SELECT zone_peche_id, MAX(label)
-FROM peche_nc.env_mer.capture_zone
-GROUP BY zone_peche_id;
-
-
--- ---- DIM_CARROYAGE ------
-CREATE TABLE DIM_CARROYAGE (
-    carroyage_id           INT PRIMARY KEY,
-    commune                VARCHAR(50),
-    eth                    VARCHAR(50),
-    zone_ancienne          VARCHAR(50),
-    zone_nouvelle          VARCHAR(50),
-    zone_peche_id_associe  VARCHAR(255)
-);
-
-INSERT INTO DIM_CARROYAGE
-SELECT carroyage_id, carroyage_commune, carroyage_eth,
-       carroyage_zone_peche, carroyage_nouvelle_zone_peche, coarroyage_zone_peche_id
-FROM peche_nc.env_mer.carroyage_peche;
-
-
--- ============================================================================
--- 2. TABLES DE FAITS (SFD §6.5)
--- ============================================================================
-
--- ---- FAIT_CARTE : grain = une carte de pêche
-CREATE TABLE FAIT_CARTE (
-    carte_id             VARCHAR(255) PRIMARY KEY,
-    capitaine_id         VARCHAR(255),
-    patron_pecheur_id    VARCHAR(255),
-    navire_id            VARCHAR(255),
-    date_delivrance      DATE,
-    carte_benefice       FLOAT,
-    carte_depense        FLOAT,
-    carte_recette        FLOAT,
-    carte_rendement      FLOAT,
-    carte_carburant_qte  FLOAT,
-    carte_maree          INT,
-    carte_tonnage_epe    FLOAT
-);
-
-INSERT INTO FAIT_CARTE
-SELECT carte_id, capitaine_id, patron_pecheur_id, carte_autorisation_navire_id,
-       carte_date_delivrance, carte_benefice, carte_depense, carte_recette,
-       carte_rendement, carte_carburant_qte, carte_maree, carte_tonnage_epe
-FROM peche_nc.env_mer.pecheur_anonymise;
-
-
--- ---- FAIT_CAMPAGNE : grain = une campagne / sortie
-CREATE TABLE FAIT_CAMPAGNE (
-    campagne_id             VARCHAR(255) PRIMARY KEY,
-    carte_id                VARCHAR(255),
-    date_debut              DATE,
-    date_fin                DATE,
-    -- durée neutralisée (NULL) si la fin précède le début : cf. rapport
-    -- d'anomalies plutôt qu'une valeur négative absurde
-    duree_jours             INT,
-    campagne_benefice       FLOAT,
-    campagne_depense        FLOAT,
-    campagne_recette        FLOAT,
-    campagne_rendement      FLOAT,
-    campagne_carburant_qte  FLOAT,
-    campagne_charges_sociales FLOAT,
-    campagne_jours_mer      FLOAT,
-    campagne_jours_peche    FLOAT,
-    campagne_nbre_equipage  FLOAT,
-    campagne_nbr_femme_abord INT,
-    campagne_salaire_matelots FLOAT,
-    campagne_salaire_patron FLOAT,
-    campagne_tonnage_epe    FLOAT
-);
-
-INSERT INTO FAIT_CAMPAGNE
-SELECT campagne_id, campagne_carte_id, campagne_date_debut, campagne_date_fin,
+-- La source porte cinq orthographes pour deux types de carte, dont une
+-- doublement encodee. On normalise et on garde la variante brute.
+INSERT INTO DIM_CARTE (carte_id, carte_type, carte_type_source, carte_annee,
+                       carte_renouvellement, carte_autorisation_statut,
+                       carte_autorisation_annee, commune_key,
+                       carte_autorisation_province)
+SELECT p.carte_id,
        CASE
-           WHEN campagne_date_fin IS NULL OR campagne_date_debut IS NULL THEN NULL
-           WHEN campagne_date_fin < campagne_date_debut THEN NULL
-           ELSE DATEDIFF(DAY, campagne_date_debut, campagne_date_fin)
+         WHEN p.carte_type LIKE 'C%ti%re' OR p.carte_type LIKE 'C%tiere' THEN N'Côtière'
+         WHEN p.carte_type LIKE 'Ha%ri%re' OR p.carte_type LIKE 'Haut%'  THEN N'Hauturière'
+         ELSE p.carte_type
        END,
-       campagne_benefice, campagne_depense, campagne_recette, campagne_rendement,
-       campagne_carburant_qte, campagne_charges_sociales,
-       campagne_jours_mer, campagne_jours_peche, campagne_nbre_equipage,
-       campagne_nbr_femme_abord, campagne_salaire_matelots, campagne_salaire_patron,
-       campagne_tonnage_epe
-FROM peche_nc.env_mer.campagne_peche;
+       p.carte_type,
+       p.carte_annee, p.carte_renouvellement, p.carte_autorisation_statut,
+       p.carte_autorisation_annee,
+       ISNULL(dc.commune_key, -1),
+       p.carte_autorisation_province
+FROM peche_nc.env_mer.pecheur_anonymise p
+LEFT JOIN DIM_COMMUNE dc
+       ON dc.commune = LTRIM(RTRIM(p.carte_autorisation_commune));
+GO
 
 
--- ---- FAIT_CAPTURE : grain = une capture
+-- nb_moteurs est un attribut legitime du navire. Le detail des moteurs vit
+-- dans DIM_MOTEUR : 24 navires en portent plusieurs, et retenir MAX(marque)
+-- et MAX(carburant) independamment pouvait produire un couple qui n'existe
+-- dans aucun moteur reel.
+CREATE TABLE DIM_NAVIRE (
+    navire_key            INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+    navire_id             VARCHAR(255)  NULL,
+    annee_construction    INT           NULL,
+    longueur              FLOAT         NULL,
+    tranche_longueur      NVARCHAR(30)  NULL,
+    jauge_brute           FLOAT         NULL,
+    origine               NVARCHAR(120) NULL,
+    categorie_navigation  NVARCHAR(120) NULL,
+    materiau              NVARCHAR(120) NULL,
+    constructeur          NVARCHAR(200) NULL,
+    nb_moteurs            INT           NULL
+);
+
+SET IDENTITY_INSERT DIM_NAVIRE ON;
+INSERT INTO DIM_NAVIRE (navire_key, navire_id, tranche_longueur, nb_moteurs)
+VALUES (-1, NULL, 'Inconnue', 0);
+SET IDENTITY_INSERT DIM_NAVIRE OFF;
+
+INSERT INTO DIM_NAVIRE (navire_id, annee_construction, longueur,
+                        tranche_longueur, jauge_brute, origine,
+                        categorie_navigation, materiau, constructeur,
+                        nb_moteurs)
+SELECT n.navire_id,
+       TRY_CONVERT(INT, n.navire_annee_construction),  -- texte en source
+       CASE WHEN n.navire_longueur > 0 THEN n.navire_longueur END,
+       CASE WHEN n.navire_longueur IS NULL OR n.navire_longueur <= 0 THEN 'Inconnue'
+            WHEN n.navire_longueur <  6 THEN 'Moins de 6 m'
+            WHEN n.navire_longueur < 10 THEN N'6 à 10 m'
+            WHEN n.navire_longueur < 15 THEN N'10 à 15 m'
+            ELSE '15 m et plus' END,
+       CASE WHEN n.navire_jauge_brute > 0 THEN n.navire_jauge_brute END,
+       n.navire_origine, n.categorie_navigation, n.materiau, n.constructeur,
+       ISNULL(m.nb, 0)
+FROM peche_nc.env_mer.navire_peche_anonymise n
+LEFT JOIN (
+    SELECT navire_id, COUNT(*) AS nb
+    FROM peche_nc.env_mer.navire_moteur
+    GROUP BY navire_id
+) m ON m.navire_id = n.navire_id;
+GO
+
+
+-- Un moteur appartient a un seul navire : la relation est 1-N, une table de
+-- pont serait inutile. Le couple marque/carburant reste ici celui d'un moteur
+-- reel, jamais une recomposition.
+CREATE TABLE DIM_MOTEUR (
+    moteur_key   INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+    moteur_id    VARCHAR(255)  NULL,
+    navire_key   INT           NOT NULL,
+    usage_moteur NVARCHAR(200) NULL,
+    marque       NVARCHAR(200) NULL,
+    carburant    NVARCHAR(60)  NULL
+);
+
+SET IDENTITY_INSERT DIM_MOTEUR ON;
+INSERT INTO DIM_MOTEUR (moteur_key, moteur_id, navire_key, usage_moteur,
+                        marque, carburant)
+VALUES (-1, NULL, -1, 'Inconnu', 'Inconnue', 'Inconnu');
+SET IDENTITY_INSERT DIM_MOTEUR OFF;
+
+INSERT INTO DIM_MOTEUR (moteur_id, navire_key, usage_moteur, marque, carburant)
+SELECT m.moteur_id, ISNULL(n.navire_key, -1),
+       LEFT(m.usage, 200), LEFT(m.marque, 200), LEFT(m.carburant, 60)
+FROM peche_nc.env_mer.navire_moteur m
+LEFT JOIN DIM_NAVIRE n ON n.navire_id = m.navire_id;
+GO
+
+
+-- Cle de substitution : une PK (categorie_code, produit) porterait sur du
+-- NVARCHAR long, au-dela des 900 octets admis pour une cle d'index.
+CREATE TABLE DIM_ESPECE (
+    espece_key      INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+    categorie_code  VARCHAR(255)  NULL,
+    categorie_nom   NVARCHAR(255) NULL,
+    produit         NVARCHAR(400) NULL,
+    seuil_fiab70    FLOAT         NULL,
+    seuil_fiab95    FLOAT         NULL
+);
+
+SET IDENTITY_INSERT DIM_ESPECE ON;
+INSERT INTO DIM_ESPECE (espece_key, categorie_nom, produit)
+VALUES (-1, 'Inconnue', 'Inconnu');
+SET IDENTITY_INSERT DIM_ESPECE OFF;
+
+INSERT INTO DIM_ESPECE (categorie_code, categorie_nom, produit,
+                        seuil_fiab70, seuil_fiab95)
+SELECT capture_categorie_code,
+       MAX(capture_categorie_nom),
+       LEFT(capture_produit, 400),
+       MAX(capture_categorie_seuil_fiabilite70),
+       MAX(capture_categorie_seuil_fiabilite95)
+FROM peche_nc.env_mer.capture_peche
+WHERE capture_categorie_code IS NOT NULL
+GROUP BY capture_categorie_code, LEFT(capture_produit, 400);
+GO
+
+
+-- Grain : le couple (technique, transformation). Joindre sur la seule
+-- technique multiplierait les lignes du fait, d'ou la cle de substitution.
+CREATE TABLE DIM_TECHNIQUE (
+    technique_key  INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+    technique      NVARCHAR(200) NULL,
+    transformation NVARCHAR(200) NULL
+);
+
+SET IDENTITY_INSERT DIM_TECHNIQUE ON;
+INSERT INTO DIM_TECHNIQUE (technique_key, technique, transformation)
+VALUES (-1, 'Inconnue', 'Inconnue');
+SET IDENTITY_INSERT DIM_TECHNIQUE OFF;
+
+INSERT INTO DIM_TECHNIQUE (technique, transformation)
+SELECT DISTINCT LEFT(capture_technique, 200), LEFT(capture_transformation, 200)
+FROM peche_nc.env_mer.capture_peche
+WHERE capture_technique IS NOT NULL OR capture_transformation IS NOT NULL;
+GO
+
+
+-- Aucun referentiel de zones dans l'ODS : reconstruit depuis capture_zone,
+-- commune et superficie venant du carroyage.
+CREATE TABLE DIM_ZONE_PECHE (
+    zone_key       INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+    zone_peche_id  VARCHAR(255)  NULL,
+    label          NVARCHAR(400) NULL,
+    communes       NVARCHAR(500) NULL,
+    superficie_km2 FLOAT         NULL
+);
+
+SET IDENTITY_INSERT DIM_ZONE_PECHE ON;
+INSERT INTO DIM_ZONE_PECHE (zone_key, zone_peche_id, label)
+VALUES (-1, NULL, 'Zone inconnue');
+SET IDENTITY_INSERT DIM_ZONE_PECHE OFF;
+
+INSERT INTO DIM_ZONE_PECHE (zone_peche_id, label, communes, superficie_km2)
+SELECT z.zone_peche_id, MAX(z.label),
+       (SELECT STRING_AGG(CAST(c.carroyage_commune AS NVARCHAR(100)), ', ')
+        FROM peche_nc.env_mer.carroyage_peche c
+        WHERE c.coarroyage_zone_peche_id = z.zone_peche_id),
+       (SELECT SUM(c.carroyage_superficie_nv_carroyage_km2)
+        FROM peche_nc.env_mer.carroyage_peche c
+        WHERE c.coarroyage_zone_peche_id = z.zone_peche_id)
+FROM peche_nc.env_mer.capture_zone z
+WHERE z.zone_peche_id IS NOT NULL
+GROUP BY z.zone_peche_id;
+GO
+
+
+CREATE TABLE DIM_CARROYAGE (
+    carroyage_key         INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+    carroyage_id          INT           NULL,
+    commune               NVARCHAR(50)  NULL,
+    eth                   NVARCHAR(50)  NULL,
+    zone_ancienne         NVARCHAR(50)  NULL,
+    zone_nouvelle         NVARCHAR(50)  NULL,
+    zone_peche_id_associe VARCHAR(255)  NULL,
+    zone_key              INT           NOT NULL,
+    superficie_km2        FLOAT         NULL
+);
+
+INSERT INTO DIM_CARROYAGE (carroyage_id, commune, eth, zone_ancienne,
+                           zone_nouvelle, zone_peche_id_associe, zone_key,
+                           superficie_km2)
+SELECT c.carroyage_id, c.carroyage_commune, c.carroyage_eth,
+       c.carroyage_zone_peche, c.carroyage_nouvelle_zone_peche,
+       c.coarroyage_zone_peche_id,
+       ISNULL(z.zone_key, -1),
+       c.carroyage_superficie_nv_carroyage_km2
+FROM peche_nc.env_mer.carroyage_peche c
+LEFT JOIN DIM_ZONE_PECHE z ON z.zone_peche_id = c.coarroyage_zone_peche_id;
+GO
+
+
+CREATE TABLE DIM_PECHERIE (
+    pecherie_key INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+    code         NVARCHAR(60)  NULL,
+    nom          NVARCHAR(400) NULL,
+    zone         NVARCHAR(200) NULL,
+    taille_mini  NVARCHAR(120) NULL,
+    periode      NVARCHAR(200) NULL,
+    quota        NVARCHAR(200) NULL
+);
+
+SET IDENTITY_INSERT DIM_PECHERIE ON;
+INSERT INTO DIM_PECHERIE (pecherie_key, code, nom) VALUES (-1, NULL, 'Inconnue');
+SET IDENTITY_INSERT DIM_PECHERIE OFF;
+
+INSERT INTO DIM_PECHERIE (code, nom, zone, taille_mini, periode, quota)
+SELECT code, MAX(LTRIM(RTRIM(nom))), MAX(zone), MAX(taille),
+       MAX(periode), MAX(quantite)
+FROM peche_nc.env_mer.carte_pecherie_specifique
+WHERE code IS NOT NULL
+GROUP BY code;
+GO
+
+
+-- 2. TABLES DE FAITS ---------------------------------------------------------
+
+-- Grain : une carte de peche.
+-- AGREGAT : ses mesures somment les campagnes de la carte. Ne jamais
+-- additionner FAIT_CARTE.carte_recette et FAIT_CAMPAGNE.campagne_recette.
+CREATE TABLE FAIT_CARTE (
+    carte_id             VARCHAR(255) NOT NULL PRIMARY KEY,
+    carte_key            INT NOT NULL,
+    temps_key            INT NOT NULL,
+    capitaine_key        INT NOT NULL,
+    patron_key           INT NOT NULL,
+    navire_key           INT NOT NULL,
+    commune_key          INT NOT NULL,
+    carte_benefice       FLOAT NULL,
+    carte_depense        FLOAT NULL,
+    carte_recette        FLOAT NULL,
+    carte_rendement      FLOAT NULL,
+    carte_carburant_qte  FLOAT NULL,
+    carte_maree          INT   NULL,
+    carte_tonnage_epe    FLOAT NULL
+);
+
+INSERT INTO FAIT_CARTE (carte_id, carte_key, temps_key, capitaine_key,
+                        patron_key, navire_key, commune_key,
+                        carte_benefice, carte_depense, carte_recette,
+                        carte_rendement, carte_carburant_qte, carte_maree,
+                        carte_tonnage_epe)
+SELECT p.carte_id,
+       ISNULL(dc.carte_key, -1),
+       -- hors des bornes du calendrier : membre inconnu
+       CASE WHEN p.carte_date_delivrance IS NOT NULL
+             AND YEAR(p.carte_date_delivrance) BETWEEN 1990 AND 2030
+            THEN CONVERT(INT, FORMAT(p.carte_date_delivrance, 'yyyyMMdd'))
+            ELSE -1 END,
+       ISNULL(cap.personne_key, -1),
+       ISNULL(pat.personne_key, -1),
+       ISNULL(dn.navire_key, -1),
+       ISNULL(dcom.commune_key, -1),
+       p.carte_benefice, p.carte_depense, p.carte_recette, p.carte_rendement,
+       p.carte_carburant_qte,
+       CASE WHEN p.carte_maree >= 0 THEN p.carte_maree END,
+       p.carte_tonnage_epe
+FROM peche_nc.env_mer.pecheur_anonymise p
+LEFT JOIN DIM_CARTE    dc  ON dc.carte_id  = p.carte_id
+LEFT JOIN DIM_PERSONNE cap ON cap.personne_id = p.capitaine_id
+LEFT JOIN DIM_PERSONNE pat ON pat.personne_id = p.patron_pecheur_id
+LEFT JOIN DIM_NAVIRE   dn  ON dn.navire_id = p.carte_autorisation_navire_id
+LEFT JOIN DIM_COMMUNE  dcom ON dcom.commune = LTRIM(RTRIM(p.capitaine_commune));
+GO
+
+
+-- Grain : une campagne.
+CREATE TABLE FAIT_CAMPAGNE (
+    campagne_id               VARCHAR(255) NOT NULL PRIMARY KEY,
+    carte_key                 INT NOT NULL,
+    navire_key                INT NOT NULL,
+    temps_debut_key           INT NOT NULL,
+    temps_fin_key             INT NOT NULL,
+    duree_jours               INT   NULL,
+    campagne_benefice         FLOAT NULL,
+    campagne_depense          FLOAT NULL,
+    campagne_recette          FLOAT NULL,
+    campagne_rendement        FLOAT NULL,
+    campagne_carburant_qte    FLOAT NULL,
+    campagne_charges_sociales FLOAT NULL,
+    campagne_jours_mer        FLOAT NULL,
+    campagne_jours_peche      FLOAT NULL,
+    campagne_nbre_equipage    FLOAT NULL,
+    campagne_nbr_femme_abord  INT   NULL,
+    campagne_salaire_matelots FLOAT NULL,
+    campagne_salaire_patron   FLOAT NULL,
+    campagne_tonnage_epe      FLOAT NULL
+);
+
+INSERT INTO FAIT_CAMPAGNE (campagne_id, carte_key, navire_key,
+                           temps_debut_key, temps_fin_key, duree_jours,
+                           campagne_benefice, campagne_depense,
+                           campagne_recette, campagne_rendement,
+                           campagne_carburant_qte, campagne_charges_sociales,
+                           campagne_jours_mer, campagne_jours_peche,
+                           campagne_nbre_equipage, campagne_nbr_femme_abord,
+                           campagne_salaire_matelots, campagne_salaire_patron,
+                           campagne_tonnage_epe)
+SELECT c.campagne_id,
+       ISNULL(dc.carte_key, -1),
+       ISNULL(fc.navire_key, -1),
+       CASE WHEN c.campagne_date_debut IS NOT NULL
+             AND YEAR(c.campagne_date_debut) BETWEEN 1990 AND 2030
+            THEN CONVERT(INT, FORMAT(c.campagne_date_debut, 'yyyyMMdd'))
+            ELSE -1 END,
+       CASE WHEN c.campagne_date_fin IS NOT NULL
+             AND YEAR(c.campagne_date_fin) BETWEEN 1990 AND 2030
+            THEN CONVERT(INT, FORMAT(c.campagne_date_fin, 'yyyyMMdd'))
+            ELSE -1 END,
+       -- duree NULL si la fin precede le debut, plutot qu'une valeur negative
+       CASE WHEN c.campagne_date_fin IS NULL OR c.campagne_date_debut IS NULL
+            THEN NULL
+            WHEN c.campagne_date_fin < c.campagne_date_debut THEN NULL
+            ELSE DATEDIFF(DAY, c.campagne_date_debut, c.campagne_date_fin)
+       END,
+       c.campagne_benefice, c.campagne_depense, c.campagne_recette,
+       c.campagne_rendement, c.campagne_carburant_qte,
+       c.campagne_charges_sociales, c.campagne_jours_mer,
+       c.campagne_jours_peche, c.campagne_nbre_equipage,
+       c.campagne_nbr_femme_abord, c.campagne_salaire_matelots,
+       c.campagne_salaire_patron, c.campagne_tonnage_epe
+FROM peche_nc.env_mer.campagne_peche c
+LEFT JOIN DIM_CARTE  dc ON dc.carte_id = c.campagne_carte_id
+LEFT JOIN FAIT_CARTE fc ON fc.carte_id = c.campagne_carte_id;
+GO
+
+
+-- Grain : une espece capturee. La zone n'y figure pas : une capture en porte
+-- jusqu'a 6, l'ajouter multiplierait le poids. Voir PONT_CAPTURE_ZONE.
 CREATE TABLE FAIT_CAPTURE (
-    capture_id                  VARCHAR(255) PRIMARY KEY,
-    campagne_id                 VARCHAR(255),
-    categorie_code               VARCHAR(255),
-    produit                      NVARCHAR(4000),
-    technique                    NVARCHAR(4000),
-    capture_nombre               FLOAT,
-    capture_poids_entier_total  FLOAT,
-    capture_poids_transf_total  FLOAT,
-    capture_valeurxpf            FLOAT
+    capture_id                 VARCHAR(255) NOT NULL PRIMARY KEY,
+    campagne_id                VARCHAR(255) NULL,   -- dimension degeneree
+    carte_key                  INT NOT NULL,
+    navire_key                 INT NOT NULL,
+    temps_key                  INT NOT NULL,
+    espece_key                 INT NOT NULL,
+    technique_key              INT NOT NULL,
+    capture_nombre             FLOAT NULL,
+    capture_poids_entier_total FLOAT NULL,
+    capture_poids_transf_total FLOAT NULL,
+    capture_valeurxpf          FLOAT NULL
 );
 
-INSERT INTO FAIT_CAPTURE
-SELECT capture_id, capture_campagne_id, capture_categorie_code, capture_produit,
-       capture_technique, capture_nombre, capture_poids_entier_total,
-       capture_poids_transf_total, capture_valeurxpf
-FROM peche_nc.env_mer.capture_peche;
+INSERT INTO FAIT_CAPTURE (capture_id, campagne_id, carte_key, navire_key,
+                          temps_key, espece_key, technique_key,
+                          capture_nombre, capture_poids_entier_total,
+                          capture_poids_transf_total, capture_valeurxpf)
+SELECT cap.capture_id,
+       cap.capture_campagne_id,
+       ISNULL(fca.carte_key, -1),
+       ISNULL(fca.navire_key, -1),
+       ISNULL(fca.temps_debut_key, -1),   -- pas de date propre a la capture
+       ISNULL(de.espece_key, -1),
+       ISNULL(dt.technique_key, -1),
+       cap.capture_nombre, cap.capture_poids_entier_total,
+       cap.capture_poids_transf_total, cap.capture_valeurxpf
+FROM peche_nc.env_mer.capture_peche cap
+LEFT JOIN FAIT_CAMPAGNE fca ON fca.campagne_id = cap.capture_campagne_id
+-- Jointures null-safe. En SQL, NULL = NULL n'est pas vrai : une egalite
+-- simple rejetterait les combinaisons dont un membre est NULL, alors
+-- qu'elles existent bien dans la dimension, et la capture tomberait sur le
+-- membre inconnu a tort. 1 086 captures ont technique ou transformation a
+-- NULL ; produit et categorie_code n'en ont aucune aujourd'hui, mais la
+-- meme precaution y evite une regression silencieuse au prochain chargement.
+LEFT JOIN DIM_ESPECE de
+       ON (de.categorie_code = cap.capture_categorie_code
+           OR (de.categorie_code IS NULL AND cap.capture_categorie_code IS NULL))
+      AND (de.produit = LEFT(cap.capture_produit, 400)
+           OR (de.produit IS NULL AND cap.capture_produit IS NULL))
+LEFT JOIN DIM_TECHNIQUE dt
+       ON (dt.technique = LEFT(cap.capture_technique, 200)
+           OR (dt.technique IS NULL AND cap.capture_technique IS NULL))
+      AND (dt.transformation = LEFT(cap.capture_transformation, 200)
+           OR (dt.transformation IS NULL AND cap.capture_transformation IS NULL));
+GO
 
 
--- ---- FAIT_FRAIS : grain = un frais associé à une campagne
--- Déjà exactement à ce grain dans l'ODS (table campagne_frais) : reprise
--- quasi directe, on ajoute juste le libellé lisible de la nature du frais.
+-- Grain : un poste de depense d'une campagne. La cle primaire evite qu'un
+-- rechargement double les montants.
 CREATE TABLE FAIT_FRAIS (
-    campagne_id    VARCHAR(255),
-    frais_id       VARCHAR(255),
-    nature_frais   VARCHAR(255),
-    montant        FLOAT
+    campagne_id   VARCHAR(255) NOT NULL,
+    frais_id      VARCHAR(255) NOT NULL,
+    nature_frais  NVARCHAR(255) NULL,
+    carte_key     INT NOT NULL,
+    navire_key    INT NOT NULL,
+    temps_key     INT NOT NULL,
+    montant       FLOAT NULL,
+    CONSTRAINT PK_FAIT_FRAIS PRIMARY KEY (campagne_id, frais_id)
 );
 
-INSERT INTO FAIT_FRAIS
-SELECT cf.campagne_id, cf.frais_id, f.libelle, cf.montant
+INSERT INTO FAIT_FRAIS (campagne_id, frais_id, nature_frais, carte_key,
+                        navire_key, temps_key, montant)
+SELECT cf.campagne_id, cf.frais_id, f.libelle,
+       ISNULL(fca.carte_key, -1),
+       ISNULL(fca.navire_key, -1),
+       ISNULL(fca.temps_debut_key, -1),
+       cf.montant
 FROM peche_nc.env_mer.campagne_frais cf
-JOIN peche_nc.env_mer.frais f ON cf.frais_id = f.frais_id;
+JOIN peche_nc.env_mer.frais f ON f.frais_id = cf.frais_id
+LEFT JOIN FAIT_CAMPAGNE fca ON fca.campagne_id = cf.campagne_id;
+GO
 
 
--- ============================================================================
--- 3. TABLES DE PONT (relations plusieurs-à-plusieurs)
--- ============================================================================
+-- 3. TABLES DE PONT ----------------------------------------------------------
 
+-- facteur = 1/nb_zones : sans ponderation, le poids d'une capture serait
+-- compte une fois par zone.
+--
+--   SELECT z.label, SUM(f.capture_poids_entier_total * p.facteur)
+--   FROM FAIT_CAPTURE f
+--   JOIN PONT_CAPTURE_ZONE p ON p.capture_id = f.capture_id
+--   JOIN DIM_ZONE_PECHE   z ON z.zone_key    = p.zone_key
+--   GROUP BY z.label;
+--
+-- Pour un total sans ventilation, interroger FAIT_CAPTURE seule.
 CREATE TABLE PONT_CAPTURE_ZONE (
-    capture_id     VARCHAR(255),
-    zone_peche_id  VARCHAR(255)
+    capture_id VARCHAR(255) NOT NULL,
+    zone_key   INT          NOT NULL,
+    nb_zones   INT          NULL,
+    facteur    FLOAT        NULL,
+    CONSTRAINT PK_PONT_CAPTURE_ZONE PRIMARY KEY (capture_id, zone_key)
 );
-INSERT INTO PONT_CAPTURE_ZONE
-SELECT capture_id, zone_peche_id FROM peche_nc.env_mer.capture_zone;
 
-CREATE TABLE PONT_CARTE_ESPECE (
-    carte_id  VARCHAR(255),
-    code      VARCHAR(255)
+INSERT INTO PONT_CAPTURE_ZONE (capture_id, zone_key, nb_zones, facteur)
+SELECT cz.capture_id,
+       ISNULL(z.zone_key, -1),
+       n.nb,
+       1.0 / n.nb
+FROM (SELECT DISTINCT capture_id, zone_peche_id
+      FROM peche_nc.env_mer.capture_zone
+      WHERE zone_peche_id IS NOT NULL) cz
+JOIN (SELECT capture_id, COUNT(DISTINCT zone_peche_id) AS nb
+      FROM peche_nc.env_mer.capture_zone
+      WHERE zone_peche_id IS NOT NULL
+      GROUP BY capture_id) n ON n.capture_id = cz.capture_id
+LEFT JOIN DIM_ZONE_PECHE z ON z.zone_peche_id = cz.zone_peche_id;
+GO
+
+
+CREATE TABLE PONT_CARTE_PECHERIE (
+    carte_key    INT NOT NULL,
+    pecherie_key INT NOT NULL,
+    CONSTRAINT PK_PONT_CARTE_PECHERIE PRIMARY KEY (carte_key, pecherie_key)
 );
-INSERT INTO PONT_CARTE_ESPECE
-SELECT carte_id, code FROM peche_nc.env_mer.carte_pecherie_specifique;
+
+INSERT INTO PONT_CARTE_PECHERIE (carte_key, pecherie_key)
+SELECT DISTINCT ISNULL(dc.carte_key, -1), ISNULL(dp.pecherie_key, -1)
+FROM peche_nc.env_mer.carte_pecherie_specifique cps
+LEFT JOIN DIM_CARTE    dc ON dc.carte_id = cps.carte_id
+LEFT JOIN DIM_PECHERIE dp ON dp.code     = cps.code;
+GO
 
 
--- ============================================================================
--- 4. VÉRIFICATIONS
--- ============================================================================
-SELECT 'DIM_TEMPS' AS t, COUNT(*) FROM DIM_TEMPS
-UNION ALL SELECT 'DIM_PERSONNE', COUNT(*) FROM DIM_PERSONNE
-UNION ALL SELECT 'DIM_CARTE', COUNT(*) FROM DIM_CARTE
-UNION ALL SELECT 'DIM_NAVIRE', COUNT(*) FROM DIM_NAVIRE
-UNION ALL SELECT 'DIM_MOTEUR', COUNT(*) FROM DIM_MOTEUR
-UNION ALL SELECT 'DIM_ESPECE', COUNT(*) FROM DIM_ESPECE
-UNION ALL SELECT 'DIM_TECHNIQUE', COUNT(*) FROM DIM_TECHNIQUE
-UNION ALL SELECT 'DIM_ZONE_PECHE', COUNT(*) FROM DIM_ZONE_PECHE
-UNION ALL SELECT 'DIM_CARROYAGE', COUNT(*) FROM DIM_CARROYAGE
-UNION ALL SELECT 'FAIT_CARTE', COUNT(*) FROM FAIT_CARTE
-UNION ALL SELECT 'FAIT_CAMPAGNE', COUNT(*) FROM FAIT_CAMPAGNE
-UNION ALL SELECT 'FAIT_CAPTURE', COUNT(*) FROM FAIT_CAPTURE
-UNION ALL SELECT 'FAIT_FRAIS', COUNT(*) FROM FAIT_FRAIS;
+-- 4. INDEX -------------------------------------------------------------------
 
--- Orphelins : toute campagne doit avoir une carte dans DIM_CARTE
-SELECT COUNT(*) AS campagnes_orphelines
-FROM FAIT_CAMPAGNE fc
-LEFT JOIN DIM_CARTE dc ON fc.carte_id = dc.carte_id
-WHERE dc.carte_id IS NULL;
+-- Sur une instance a court de memoire ces CREATE INDEX attendent
+-- indefiniment (wait_type RESOURCE_SEMAPHORE). Verifier la cible :
+--     SELECT committed_target_kb/1024 AS cible_mo FROM sys.dm_os_sys_info;
+CREATE INDEX IX_FAIT_CARTE_temps      ON FAIT_CARTE (temps_key);
+CREATE INDEX IX_FAIT_CARTE_navire     ON FAIT_CARTE (navire_key);
+CREATE INDEX IX_FAIT_CAMPAGNE_carte   ON FAIT_CAMPAGNE (carte_key);
+CREATE INDEX IX_FAIT_CAMPAGNE_temps   ON FAIT_CAMPAGNE (temps_debut_key);
+CREATE INDEX IX_FAIT_CAPTURE_espece   ON FAIT_CAPTURE (espece_key);
+CREATE INDEX IX_FAIT_CAPTURE_temps    ON FAIT_CAPTURE (temps_key);
+CREATE INDEX IX_FAIT_CAPTURE_campagne ON FAIT_CAPTURE (campagne_id);
+CREATE INDEX IX_FAIT_FRAIS_temps      ON FAIT_FRAIS (temps_key);
+CREATE INDEX IX_PONT_ZONE_zone        ON PONT_CAPTURE_ZONE (zone_key);
+CREATE INDEX IX_DIM_MOTEUR_navire     ON DIM_MOTEUR (navire_key);
+GO
+
+
+-- 5. VERIFICATIONS -----------------------------------------------------------
+
+SELECT 'DIM_TEMPS' AS objet, COUNT(*) AS lignes FROM DIM_TEMPS
+UNION ALL SELECT 'DIM_COMMUNE',         COUNT(*) FROM DIM_COMMUNE
+UNION ALL SELECT 'DIM_PERSONNE',        COUNT(*) FROM DIM_PERSONNE
+UNION ALL SELECT 'DIM_CARTE',           COUNT(*) FROM DIM_CARTE
+UNION ALL SELECT 'DIM_NAVIRE',          COUNT(*) FROM DIM_NAVIRE
+UNION ALL SELECT 'DIM_MOTEUR',          COUNT(*) FROM DIM_MOTEUR
+UNION ALL SELECT 'DIM_ESPECE',          COUNT(*) FROM DIM_ESPECE
+UNION ALL SELECT 'DIM_TECHNIQUE',       COUNT(*) FROM DIM_TECHNIQUE
+UNION ALL SELECT 'DIM_ZONE_PECHE',      COUNT(*) FROM DIM_ZONE_PECHE
+UNION ALL SELECT 'DIM_CARROYAGE',       COUNT(*) FROM DIM_CARROYAGE
+UNION ALL SELECT 'DIM_PECHERIE',        COUNT(*) FROM DIM_PECHERIE
+UNION ALL SELECT 'FAIT_CARTE',          COUNT(*) FROM FAIT_CARTE
+UNION ALL SELECT 'FAIT_CAMPAGNE',       COUNT(*) FROM FAIT_CAMPAGNE
+UNION ALL SELECT 'FAIT_CAPTURE',        COUNT(*) FROM FAIT_CAPTURE
+UNION ALL SELECT 'FAIT_FRAIS',          COUNT(*) FROM FAIT_FRAIS
+UNION ALL SELECT 'PONT_CAPTURE_ZONE',   COUNT(*) FROM PONT_CAPTURE_ZONE
+UNION ALL SELECT 'PONT_CARTE_PECHERIE', COUNT(*) FROM PONT_CARTE_PECHERIE
+ORDER BY objet;
+
+-- Quelques -1 sont normaux ; un taux eleve signale une jointure ratee.
+SELECT 'FAIT_CAMPAGNE.carte_key = -1'   AS controle,
+       SUM(CASE WHEN carte_key = -1 THEN 1 ELSE 0 END) AS inconnus,
+       COUNT(*) AS total FROM FAIT_CAMPAGNE
+UNION ALL
+SELECT 'FAIT_CAPTURE.espece_key = -1',
+       SUM(CASE WHEN espece_key = -1 THEN 1 ELSE 0 END), COUNT(*) FROM FAIT_CAPTURE
+UNION ALL
+SELECT 'FAIT_CAPTURE.technique_key = -1',
+       SUM(CASE WHEN technique_key = -1 THEN 1 ELSE 0 END), COUNT(*) FROM FAIT_CAPTURE
+UNION ALL
+SELECT 'FAIT_CAMPAGNE.temps_debut_key = -1',
+       SUM(CASE WHEN temps_debut_key = -1 THEN 1 ELSE 0 END), COUNT(*) FROM FAIT_CAMPAGNE;
+
+-- Une capture dont la technique existe en dimension ne doit pas tomber sur le
+-- membre inconnu : ce controle attrape une jointure redevenue non null-safe.
+SELECT COUNT(*) AS captures_mal_rattachees
+FROM FAIT_CAPTURE f
+JOIN peche_nc.env_mer.capture_peche s ON s.capture_id = f.capture_id
+WHERE f.technique_key = -1
+  AND EXISTS (SELECT 1 FROM DIM_TECHNIQUE d
+              WHERE (d.technique = LEFT(s.capture_technique, 200)
+                     OR (d.technique IS NULL AND s.capture_technique IS NULL))
+                AND (d.transformation = LEFT(s.capture_transformation, 200)
+                     OR (d.transformation IS NULL AND s.capture_transformation IS NULL)));
+
+-- Le grain de DIM_PERSONNE doit etre strictement la personne.
+SELECT COUNT(*) AS personnes_en_double
+FROM (SELECT personne_id FROM DIM_PERSONNE WHERE personne_id IS NOT NULL
+      GROUP BY personne_id HAVING COUNT(*) > 1) x;
+
+-- La somme des facteurs doit valoir 1 pour chaque capture ventilee.
+SELECT COUNT(*) AS captures_mal_reparties
+FROM (SELECT capture_id, SUM(facteur) AS s
+      FROM PONT_CAPTURE_ZONE GROUP BY capture_id) x
+WHERE ABS(x.s - 1.0) > 0.000001;
+
+-- FAIT_CARTE etant un agregat, sa recette doit rester proche de la somme des
+-- campagnes de la meme carte.
+SELECT COUNT(*) AS cartes_en_ecart
+FROM FAIT_CARTE fc
+JOIN (SELECT carte_key, SUM(campagne_recette) AS recette
+      FROM FAIT_CAMPAGNE GROUP BY carte_key) ca ON ca.carte_key = fc.carte_key
+WHERE ABS(ISNULL(fc.carte_recette,0) - ISNULL(ca.recette,0)) > 1;
