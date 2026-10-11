@@ -1,0 +1,60 @@
+{% extends "base.html.j2" %}
+{% block content %}
+<header class="page">
+  <div>
+    <h1>{{ title }}</h1>
+    <p class="meta">Date de référence : <strong>{{ date_ref }}</strong> · Source : {{ source }} · généré le {{ generated_at }}{% if refresh_seconds %} · actualisation automatique{% endif %}</p>
+  </div>
+</header>
+
+<nav class="themes" aria-label="Thèmes">
+  {% for theme in themes %}<a href="#{{ theme.id }}">{{ theme.titre }}</a>{% endfor %}
+</nav>
+
+<details class="card hypotheses">
+  <summary>Règles de calcul et hypothèses retenues</summary>
+  <ul>{% for h in hypotheses %}<li>{{ h }}</li>{% endfor %}</ul>
+</details>
+
+{% for theme in themes %}
+<section class="theme" id="{{ theme.id }}">
+  <header>
+    <h2 class="theme-title">{{ theme.titre }}</h2>
+    <p class="subtitle">{{ theme.question }}</p>
+  </header>
+  <div class="grid">
+    {% for ind in theme.indicateurs %}
+    <article class="card{% if ind.wide %} wide{% endif %}">
+      <h3 style="margin:0;font-size:16px"><span class="code">{{ ind.code }}</span>{{ ind.titre }}</h3>
+      <p class="definition">{{ ind.definition }}</p>
+      {% if ind.kpis %}
+      <div class="mini-kpis">
+        {% for kpi in ind.kpis %}
+        <div class="kpi">
+          <div class="label">{{ kpi.label }}</div>
+          <div class="value">{{ kpi.value }}{% if kpi.unit %} <span class="unit">{{ kpi.unit }}</span>{% endif %}</div>
+          {% if kpi.detail %}<div class="detail">{{ kpi.detail }}</div>{% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+      {{ ind.chart_html | safe }}
+      {% if ind.export %}<a class="export" href="{{ ind.export }}" download>Exporter la liste (CSV)</a>{% endif %}
+      {% if ind.notes %}<ul class="notes">{% for n in ind.notes %}<li>{{ n }}</li>{% endfor %}</ul>{% endif %}
+      {% if ind.table_html %}
+      <details>
+        <summary>Voir les chiffres</summary>
+        <div class="table-wrap">{{ ind.table_html | safe }}</div>
+      </details>
+      {% endif %}
+    </article>
+    {% endfor %}
+  </div>
+  {% if theme.exclus %}<p class="excluded">Exclus par le SFD : {{ theme.exclus | join(", ") }}.</p>{% endif %}
+</section>
+{% endfor %}
+
+<footer>
+  Généré par <code>python -m reporting.build_report</code> · indicateurs conformes à la fiche « Indicateurs de la restitution »
+</footer>
+{% endblock %}

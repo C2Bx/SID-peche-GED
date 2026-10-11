@@ -47,6 +47,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="construit uniquement les DTM depuis le DWH existant",
     )
+    parser.add_argument(
+        "--sans-rapport",
+        action="store_true",
+        help="ne régénère pas la restitution HTML après les DTM",
+    )
     args = parser.parse_args(argv)
     # Les modes DWH et DTM ne lisent aucun fichier source : leur associer le
     # mode JSON serait contradictoire.
@@ -176,6 +181,17 @@ def run_ods(settings: object, args: argparse.Namespace, connection: object) -> t
     return downloads, results
 
 
+def run_report(connection: object, settings: object, args: argparse.Namespace) -> None:
+    """Régénère la restitution HTML depuis les DTM et le DWH tout juste construits."""
+    if args.sans_rapport:
+        return
+    # Import différé : Plotly et pandas ne sont chargés que si le rapport est
+    # produit, ce qui garde l'ETL seul utilisable sans ces dépendances.
+    from reporting.build_report import generate_from_connection
+
+    generate_from_connection(connection, settings.db_engine)
+
+
 def run(argv: list[str] | None = None) -> int:
     """Exécute l'ETL complet et renvoie son code de sortie."""
     started_at = time.monotonic()
@@ -197,6 +213,7 @@ def run(argv: list[str] | None = None) -> int:
                 # ils dépendent ; aucune reconstruction amont n'est déclenchée.
                 check_connection(connection)
                 run_dtms(connection, settings.db_engine)
+                run_report(connection, settings, args)
                 return 0
 
             if args.dwh_only:
@@ -208,6 +225,7 @@ def run(argv: list[str] | None = None) -> int:
                 # Les DTM lisent le DWH : les laisser en l'état les rendrait
                 # incohérents avec le DWH tout juste reconstruit.
                 run_dtms(connection, settings.db_engine)
+                run_report(connection, settings, args)
                 return 0
 
             downloads, results = run_ods(settings, args, connection)
@@ -217,6 +235,7 @@ def run(argv: list[str] | None = None) -> int:
                 ensure_env_mer_exists(connection, settings.db_engine)
                 run_dwh(connection, settings.db_engine)
                 run_dtms(connection, settings.db_engine)
+                run_report(connection, settings, args)
     except Exception as exc:
         # Toute erreur bloque les étapes suivantes et renvoie un code non nul
         # exploitable par un ordonnanceur ou un outil d'intégration.

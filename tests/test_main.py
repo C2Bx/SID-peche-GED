@@ -70,6 +70,11 @@ def _mock_pipeline(monkeypatch):
     monkeypatch.setattr(
         main, "run_dtms", Mock(side_effect=lambda *_args: events.append("dtm"))
     )
+    monkeypatch.setattr(
+        main,
+        "run_report",
+        Mock(side_effect=lambda _c, _s, args: None if args.sans_rapport else events.append("rapport")),
+    )
     monkeypatch.setattr(main, "print_summary", Mock())
     return events
 
@@ -77,14 +82,14 @@ def _mock_pipeline(monkeypatch):
 def test_dwh_only_skips_ods_and_does_not_require_api_key(monkeypatch) -> None:
     events = _mock_pipeline(monkeypatch)
     assert main.run(["--dwh-only"]) == 0
-    assert events == ["dwh", "dtm"]
+    assert events == ["dwh", "dtm", "rapport"]
     main.load_settings.assert_called_once_with(require_api_key=False)
 
 
 def test_dtm_only_skips_ods_and_dwh_and_does_not_require_api_key(monkeypatch) -> None:
     events = _mock_pipeline(monkeypatch)
     assert main.run(["--dtm-only"]) == 0
-    assert events == ["dtm"]
+    assert events == ["dtm", "rapport"]
     main.run_dwh.assert_not_called()
     main.run_ods.assert_not_called()
     main.load_settings.assert_called_once_with(require_api_key=False)
@@ -100,13 +105,13 @@ def test_ods_only_skips_dwh(monkeypatch) -> None:
 def test_default_mode_runs_ods_then_dwh_then_dtms(monkeypatch) -> None:
     events = _mock_pipeline(monkeypatch)
     assert main.run([]) == 0
-    assert events == ["ods", "dwh", "dtm"]
+    assert events == ["ods", "dwh", "dtm", "rapport"]
 
 
 def test_from_json_runs_ods_then_dwh_then_dtms(monkeypatch) -> None:
     events = _mock_pipeline(monkeypatch)
     assert main.run(["--depuis-json"]) == 0
-    assert events == ["ods", "dwh", "dtm"]
+    assert events == ["ods", "dwh", "dtm", "rapport"]
     assert main.run_ods.call_args.args[1].depuis_json is True
 
 
@@ -164,3 +169,15 @@ def test_dwh_failure_prevents_dtms(monkeypatch) -> None:
     assert main.run([]) == 1
     assert events == ["ods"]
     main.run_dtms.assert_not_called()
+
+
+def test_sans_rapport_skips_report(monkeypatch) -> None:
+    events = _mock_pipeline(monkeypatch)
+    assert main.run(["--sans-rapport"]) == 0
+    assert events == ["ods", "dwh", "dtm"]
+
+
+def test_ods_only_does_not_build_report(monkeypatch) -> None:
+    events = _mock_pipeline(monkeypatch)
+    assert main.run(["--ods-only"]) == 0
+    assert "rapport" not in events
