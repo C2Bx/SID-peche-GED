@@ -180,7 +180,9 @@ La fin du script enchaîne cinq contrôles :
 - la somme des facteurs du pont, qui doit valoir 1 par capture ventilée, et
   l'écart entre `FAIT_CARTE` et la somme des campagnes correspondantes.
 
-Ces quatre derniers renvoient `0` quand tout va bien.
+Ces quatre derniers renvoient `0` quand tout va bien. Le runner Python
+journalise chaque résultat (`Contrôle SQL : personnes_en_double=0`, …) sans
+interrompre le pipeline : un écart reste à lire dans les logs.
 
 Les `CREATE INDEX` de la fin demandent de la mémoire. Sur une instance qui en
 manque, ils attendent indéfiniment avec un `wait_type` à `RESOURCE_SEMAPHORE` ;
