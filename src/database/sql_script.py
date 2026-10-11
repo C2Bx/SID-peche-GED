@@ -17,12 +17,19 @@ def split_sqlserver_batches(script: str) -> list[str]:
 
 
 def consume_result_sets(cursor: Any) -> None:
-    """Consomme les jeux de résultats sans interpréter leurs valeurs."""
+    """Consomme les jeux de résultats et journalise les contrôles SQL."""
     while True:
         # Les SELECT de contrôle restent informatifs : seule une erreur SQL
-        # interrompt le pipeline.
-        if getattr(cursor, "description", None) is not None:
-            cursor.fetchall()
+        # interrompt le pipeline. Leurs résultats sont toutefois journalisés,
+        # sans quoi une anomalie détectée par le script passerait inaperçue.
+        description = getattr(cursor, "description", None)
+        if description is not None:
+            columns = [column[0] for column in description]
+            for row in cursor.fetchall():
+                logging.info(
+                    "Contrôle SQL : %s",
+                    ", ".join(f"{name}={value}" for name, value in zip(columns, row)),
+                )
         nextset = getattr(cursor, "nextset", None)
         if nextset is None or not nextset():
             return

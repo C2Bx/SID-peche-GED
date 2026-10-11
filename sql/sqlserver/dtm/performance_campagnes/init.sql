@@ -35,9 +35,7 @@
 --   a fait la campagne.
 -- ============================================================================
 
-USE peche_nc;
-GO
-
+-- Aucune instruction USE : la base est celle de SQLSERVER_CONNECTION_STRING.
 SET XACT_ABORT ON;
 
 -- Le DWH est vérifié avant tout DROP afin de conserver le DTM existant si sa

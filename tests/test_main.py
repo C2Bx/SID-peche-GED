@@ -77,7 +77,7 @@ def _mock_pipeline(monkeypatch):
 def test_dwh_only_skips_ods_and_does_not_require_api_key(monkeypatch) -> None:
     events = _mock_pipeline(monkeypatch)
     assert main.run(["--dwh-only"]) == 0
-    assert events == ["dwh"]
+    assert events == ["dwh", "dtm"]
     main.load_settings.assert_called_once_with(require_api_key=False)
 
 

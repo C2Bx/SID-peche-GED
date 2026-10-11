@@ -40,16 +40,18 @@ Par défaut, cette commande exécute le workflow complet : téléchargement
 construction du DWH `dwh` dans la même base `peche_nc`.
 
 ```bash
-python main.py                    # API -> ODS -> DWH
+python main.py                    # API -> ODS -> DWH -> DTM
 python main.py --ods-only         # API -> ODS uniquement
-python main.py --dwh-only         # env_mer existant -> DWH uniquement
-python main.py --depuis-json      # JSON existants -> ODS -> DWH
+python main.py --dwh-only         # env_mer existant -> DWH -> DTM
+python main.py --dtm-only         # DWH existant -> DTM uniquement
+python main.py --depuis-json      # JSON existants -> ODS -> DWH -> DTM
 python main.py --depuis-json --ods-only  # JSON existants -> ODS uniquement
 ```
 
 Le mode `--dwh-only` n'appelle pas l'API et ne requiert donc pas
-`PROVINCE_SUD_API_KEY`. Les options `--ods-only` et `--dwh-only` sont
-mutuellement exclusives.
+`PROVINCE_SUD_API_KEY`. Il reconstruit aussi les DTM, qui lisent le DWH et
+seraient sinon désynchronisés. Les options `--ods-only`, `--dwh-only` et
+`--dtm-only` sont mutuellement exclusives.
 
 Le fichier `docker-compose.yml` reste dédié à PostgreSQL. Pour SQL Server sous
 Windows, installer SQL Server (Express ou Developer), SQL Server Management
@@ -178,7 +180,9 @@ La fin du script enchaîne cinq contrôles :
 - la somme des facteurs du pont, qui doit valoir 1 par capture ventilée, et
   l'écart entre `FAIT_CARTE` et la somme des campagnes correspondantes.
 
-Ces quatre derniers renvoient `0` quand tout va bien.
+Ces quatre derniers renvoient `0` quand tout va bien. Le runner Python
+journalise chaque résultat (`Contrôle SQL : personnes_en_double=0`, …) sans
+interrompre le pipeline : un écart reste à lire dans les logs.
 
 Les `CREATE INDEX` de la fin demandent de la mémoire. Sur une instance qui en
 manque, ils attendent indéfiniment avec un `wait_type` à `RESOURCE_SEMAPHORE` ;

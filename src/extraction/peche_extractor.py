@@ -190,13 +190,13 @@ def import_table(
     database_rows = count_rows(connection, table_name)
     if database_rows != len(rows):
         raise RuntimeError(
-            f"[{table_name}] vérification : JSON={len(rows)}, PostgreSQL={database_rows}."
+            f"[{table_name}] vérification : JSON={len(rows)}, base={database_rows}."
         )
     child_rows = count_rows(connection, child_table) if child_table else 0
     if child_rows != len(children):
         raise RuntimeError(
             f"[{table_name}] vérification enfants : "
-            f"JSON={len(children)}, PostgreSQL={child_rows}."
+            f"JSON={len(children)}, base={child_rows}."
         )
     result = ExtractionResult(
         table_name, pages, len(rows), database_rows, child_table, child_rows,

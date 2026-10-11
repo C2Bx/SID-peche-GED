@@ -76,12 +76,18 @@ SELECT TO_CHAR(d, 'YYYYMMDD')::INT, d,
        EXTRACT(MONTH FROM d)::SMALLINT,
        EXTRACT(QUARTER FROM d)::SMALLINT,
        EXTRACT(YEAR FROM d)::SMALLINT,
-       TO_CHAR(d, 'TMMonth'), TO_CHAR(d, 'TMDay'),
+       -- Libelles fixes : TO_CHAR('TMMonth') depend de lc_time du serveur et
+       -- complete le nom par des espaces ; les deux moteurs doivent concorder.
+       (ARRAY['Janvier','Février','Mars','Avril','Mai','Juin','Juillet',
+              'Août','Septembre','Octobre','Novembre','Décembre'])
+           [EXTRACT(MONTH FROM d)::INT],
+       (ARRAY['Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi',
+              'Dimanche'])[EXTRACT(ISODOW FROM d)::INT],
        CASE WHEN EXTRACT(MONTH FROM d)::INT IN (12,1,2) THEN 'Été'     -- hemisphere sud
             WHEN EXTRACT(MONTH FROM d)::INT IN (3,4,5)  THEN 'Automne'
             WHEN EXTRACT(MONTH FROM d)::INT IN (6,7,8)  THEN 'Hiver'
             ELSE 'Printemps' END
-FROM GENERATE_SERIES(DATE '1990-01-01', DATE '2030-12-31', INTERVAL '1 day') AS jours(d);
+FROM GENERATE_SERIES(DATE '1990-01-01', DATE '2050-12-31', INTERVAL '1 day') AS jours(d);
 
 
 CREATE TABLE DIM_COMMUNE (
@@ -408,7 +414,7 @@ SELECT p.carte_id,
        COALESCE(dc.carte_key, -1),
        -- hors des bornes du calendrier : membre inconnu
        CASE WHEN p.carte_date_delivrance IS NOT NULL
-             AND EXTRACT(YEAR FROM p.carte_date_delivrance) BETWEEN 1990 AND 2030
+             AND EXTRACT(YEAR FROM p.carte_date_delivrance) BETWEEN 1990 AND 2050
             THEN TO_CHAR(p.carte_date_delivrance, 'YYYYMMDD')::INT
             ELSE -1 END,
        COALESCE(cap.personne_key, -1),
@@ -463,11 +469,11 @@ SELECT c.campagne_id,
        COALESCE(dc.carte_key, -1),
        COALESCE(fc.navire_key, -1),
        CASE WHEN c.campagne_date_debut IS NOT NULL
-             AND EXTRACT(YEAR FROM c.campagne_date_debut) BETWEEN 1990 AND 2030
+             AND EXTRACT(YEAR FROM c.campagne_date_debut) BETWEEN 1990 AND 2050
             THEN TO_CHAR(c.campagne_date_debut, 'YYYYMMDD')::INT
             ELSE -1 END,
        CASE WHEN c.campagne_date_fin IS NOT NULL
-             AND EXTRACT(YEAR FROM c.campagne_date_fin) BETWEEN 1990 AND 2030
+             AND EXTRACT(YEAR FROM c.campagne_date_fin) BETWEEN 1990 AND 2050
             THEN TO_CHAR(c.campagne_date_fin, 'YYYYMMDD')::INT
             ELSE -1 END,
        -- duree NULL si la fin precede le debut, plutot qu'une valeur negative
