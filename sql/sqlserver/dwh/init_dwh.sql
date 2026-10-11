@@ -70,13 +70,19 @@ VALUES (-1, NULL, NULL, NULL, NULL, NULL, 'Inconnu', 'Inconnu', 'Inconnu');
 WITH jours AS (
     SELECT CAST('1990-01-01' AS DATE) AS d
     UNION ALL
-    SELECT DATEADD(DAY, 1, d) FROM jours WHERE d < '2030-12-31'
+    SELECT DATEADD(DAY, 1, d) FROM jours WHERE d < '2050-12-31'
 )
 INSERT INTO dwh.DIM_TEMPS (temps_key, date_id, jour, mois, trimestre, annee,
                        libelle_mois, jour_semaine, saison)
 SELECT CONVERT(INT, FORMAT(d, 'yyyyMMdd')), d,
        DAY(d), MONTH(d), DATEPART(QUARTER, d), YEAR(d),
-       DATENAME(MONTH, d), DATENAME(WEEKDAY, d),
+       -- Libelles fixes : DATENAME depend de la langue de session et
+       -- DATEFIRST ; les deux moteurs doivent concorder. Le 1900-01-01 est un lundi.
+       CHOOSE(MONTH(d), N'Janvier', N'Février', N'Mars', N'Avril', N'Mai',
+              N'Juin', N'Juillet', N'Août', N'Septembre', N'Octobre',
+              N'Novembre', N'Décembre'),
+       CHOOSE(DATEDIFF(DAY, '19000101', d) % 7 + 1, N'Lundi', N'Mardi',
+              N'Mercredi', N'Jeudi', N'Vendredi', N'Samedi', N'Dimanche'),
        CASE WHEN MONTH(d) IN (12,1,2) THEN N'Été'     -- hemisphere sud
             WHEN MONTH(d) IN (3,4,5)  THEN 'Automne'
             WHEN MONTH(d) IN (6,7,8)  THEN 'Hiver'
@@ -430,7 +436,7 @@ SELECT p.carte_id,
        ISNULL(dc.carte_key, -1),
        -- hors des bornes du calendrier : membre inconnu
        CASE WHEN p.carte_date_delivrance IS NOT NULL
-             AND YEAR(p.carte_date_delivrance) BETWEEN 1990 AND 2030
+             AND YEAR(p.carte_date_delivrance) BETWEEN 1990 AND 2050
             THEN CONVERT(INT, FORMAT(p.carte_date_delivrance, 'yyyyMMdd'))
             ELSE -1 END,
        ISNULL(cap.personne_key, -1),
@@ -486,11 +492,11 @@ SELECT c.campagne_id,
        ISNULL(dc.carte_key, -1),
        ISNULL(fc.navire_key, -1),
        CASE WHEN c.campagne_date_debut IS NOT NULL
-             AND YEAR(c.campagne_date_debut) BETWEEN 1990 AND 2030
+             AND YEAR(c.campagne_date_debut) BETWEEN 1990 AND 2050
             THEN CONVERT(INT, FORMAT(c.campagne_date_debut, 'yyyyMMdd'))
             ELSE -1 END,
        CASE WHEN c.campagne_date_fin IS NOT NULL
-             AND YEAR(c.campagne_date_fin) BETWEEN 1990 AND 2030
+             AND YEAR(c.campagne_date_fin) BETWEEN 1990 AND 2050
             THEN CONVERT(INT, FORMAT(c.campagne_date_fin, 'yyyyMMdd'))
             ELSE -1 END,
        -- duree NULL si la fin precede le debut, plutot qu'une valeur negative
