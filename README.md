@@ -194,3 +194,32 @@ la requête qui permet de le diagnostiquer est en commentaire dans le script.
 pip install -r requirements-dev.txt
 python -m pytest
 ```
+
+## Rapport HTML
+
+`reporting/` génère un tableau de bord HTML autonome (KPI, graphiques Plotly,
+contrôles qualité) à partir du DTM `dtm_performance_campagnes`. Il lit
+uniquement le DTM, avec la même configuration `.env` que le pipeline, sur
+PostgreSQL comme sur SQL Server.
+
+```bash
+python -m reporting.build_report                   # depuis la base
+python -m reporting.build_report --demo            # données fictives, sans base
+python -m reporting.build_report --annee 2024      # une ou plusieurs années
+python -m reporting.build_report --plotly inline   # fichier utilisable hors ligne
+```
+
+Le fichier est écrit dans `reporting/performance_campagnes/index.html` (non
+versionné). Il s'ouvre directement dans un navigateur et suit le thème clair ou
+sombre du système. Chaque graphique propose sa vue tableau.
+
+| Fichier | Rôle |
+|---|---|
+| `reporting/data.py` | lecture des trois tables du DTM, jeu de démonstration |
+| `reporting/kpis.py` | indicateurs, agrégations et contrôles qualité |
+| `reporting/charts.py` | figures Plotly et charte graphique |
+| `reporting/templates/` | gabarits Jinja2 de la page |
+| `reporting/build_report.py` | ligne de commande et assemblage |
+
+Les montants proviennent du grain campagne. L'axe navire, indicatif, n'est
+volontairement pas représenté.

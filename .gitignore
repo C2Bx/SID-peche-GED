@@ -11,3 +11,6 @@ data/raw/*.json
 *.iml
 *.png
 data/raw/
+
+# Rapports générés
+reporting/*/index.html
