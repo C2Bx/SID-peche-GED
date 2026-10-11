@@ -40,7 +40,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     modes.add_argument(
         "--dwh-only",
         action="store_true",
-        help="construit uniquement le DWH depuis l'ODS existant",
+        help="reconstruit le DWH depuis l'ODS existant, puis les DTM",
     )
     modes.add_argument(
         "--dtm-only",
@@ -205,6 +205,9 @@ def run(argv: list[str] | None = None) -> int:
                 check_connection(connection)
                 ensure_env_mer_exists(connection, settings.db_engine)
                 run_dwh(connection, settings.db_engine)
+                # Les DTM lisent le DWH : les laisser en l'état les rendrait
+                # incohérents avec le DWH tout juste reconstruit.
+                run_dtms(connection, settings.db_engine)
                 return 0
 
             downloads, results = run_ods(settings, args, connection)

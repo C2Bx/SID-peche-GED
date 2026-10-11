@@ -40,16 +40,18 @@ Par défaut, cette commande exécute le workflow complet : téléchargement
 construction du DWH `dwh` dans la même base `peche_nc`.
 
 ```bash
-python main.py                    # API -> ODS -> DWH
+python main.py                    # API -> ODS -> DWH -> DTM
 python main.py --ods-only         # API -> ODS uniquement
-python main.py --dwh-only         # env_mer existant -> DWH uniquement
-python main.py --depuis-json      # JSON existants -> ODS -> DWH
+python main.py --dwh-only         # env_mer existant -> DWH -> DTM
+python main.py --dtm-only         # DWH existant -> DTM uniquement
+python main.py --depuis-json      # JSON existants -> ODS -> DWH -> DTM
 python main.py --depuis-json --ods-only  # JSON existants -> ODS uniquement
 ```
 
 Le mode `--dwh-only` n'appelle pas l'API et ne requiert donc pas
-`PROVINCE_SUD_API_KEY`. Les options `--ods-only` et `--dwh-only` sont
-mutuellement exclusives.
+`PROVINCE_SUD_API_KEY`. Il reconstruit aussi les DTM, qui lisent le DWH et
+seraient sinon désynchronisés. Les options `--ods-only`, `--dwh-only` et
+`--dtm-only` sont mutuellement exclusives.
 
 Le fichier `docker-compose.yml` reste dédié à PostgreSQL. Pour SQL Server sous
 Windows, installer SQL Server (Express ou Developer), SQL Server Management
