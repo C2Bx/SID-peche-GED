@@ -1,41 +1,34 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import pandas as pd
 import plotly.graph_objects as go
 
-# Palette catégorielle validée (ordre fixe, jamais cyclé). La variante sombre
-# est appliquée côté navigateur par le template, à partir de cette table.
-SERIES = {
-    "recette": "#2a78d6",
-    "depense": "#eb6834",
-    "benefice": "#1baf7a",
-}
-SERIES_DARK = {
-    "#2a78d6": "#3987e5",
-    "#eb6834": "#d95926",
-    "#1baf7a": "#199e70",
-}
+# Palette catégorielle validée, dans son ordre fixe (jamais cyclée). Le thème
+# sombre est appliqué côté navigateur à partir de la table de correspondance.
+PALETTE = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300"]
+PALETTE_DARK = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300"]
+SERIES_DARK = dict(zip(PALETTE, PALETTE_DARK))
+GRIS = "#8f8e86"  # série « Autres » : regroupement, pas une identité
 TEXT_SECONDARY = "#52514e"
 GRID = "#e4e3df"
 FONT = "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
-MOIS = ["Janv.", "Févr.", "Mars", "Avr.", "Mai", "Juin",
-        "Juil.", "Août", "Sept.", "Oct.", "Nov.", "Déc."]
 
 PLOTLY_CONFIG = {"displaylogo": False, "responsive": True,
                  "modeBarButtonsToRemove": ["lasso2d", "select2d"]}
 
 
-def _layout(fig: go.Figure, *, height: int = 340, **kwargs) -> go.Figure:
-    """Applique la charte commune : fond transparent, grille discrète."""
+def _layout(fig: go.Figure, *, height: int = 320, **kwargs) -> go.Figure:
+    """Charte commune : fond transparent, grille discrète, un seul axe Y."""
     fig.update_layout(
-        height=height,
-        autosize=True,
+        height=height, autosize=True,
         margin={"l": 8, "r": 8, "t": 8, "b": 8},
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        font={"family": FONT, "size": 13, "color": TEXT_SECONDARY},
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font={"family": FONT, "size": 12, "color": TEXT_SECONDARY},
         hoverlabel={"font": {"family": FONT}},
         separators=", ",
+        legend={"orientation": "h", "y": 1.12, "x": 0},
         **kwargs,
     )
     fig.update_xaxes(gridcolor=GRID, zerolinecolor=GRID, linecolor=GRID, automargin=True)
@@ -43,88 +36,68 @@ def _layout(fig: go.Figure, *, height: int = 340, **kwargs) -> go.Figure:
     return fig
 
 
-def finance_by_year(df: pd.DataFrame) -> go.Figure:
-    """Évolution annuelle de la recette, de la dépense et du bénéfice."""
+def lines(x: Sequence, series: dict[str, Sequence], *, unit: str = "",
+          x_is_month: bool = False, height: int = 300) -> go.Figure:
+    """Évolution d'une à six séries sur un axe unique."""
     fig = go.Figure()
-    for column, key in (("Recette", "recette"), ("Dépense", "depense"),
-                        ("Bénéfice", "benefice")):
+    for i, (name, values) in enumerate(series.items()):
+        color = GRIS if name.startswith("Autres") else PALETTE[i % len(PALETTE)]
         fig.add_trace(go.Scatter(
-            x=df["Année"], y=df[column], name=column, mode="lines+markers",
-            line={"color": SERIES[key], "width": 2},
-            marker={"size": 8, "color": SERIES[key],
-                    "line": {"width": 2, "color": "rgba(255,255,255,0.9)"}},
-            hovertemplate="%{y:,.0f} XPF<extra>" + column + "</extra>",
+            x=list(x), y=list(values), name=name, mode="lines+markers",
+            line={"color": color, "width": 2},
+            marker={"size": 5 if x_is_month else 8, "color": color},
+            hovertemplate=f"%{{y:,.0f}}{(' ' + unit) if unit else ''}<extra>{name}</extra>",
         ))
-        if len(df):
-            # Étiquette directe sur le dernier point : l'identité ne repose pas
-            # sur la seule couleur.
-            fig.add_annotation(
-                x=df["Année"].iloc[-1], y=df[column].iloc[-1], text=column,
-                xanchor="left", xshift=10, showarrow=False,
-            )
-    _layout(fig, hovermode="x unified",
-            legend={"orientation": "h", "y": 1.08, "x": 0})
-    fig.update_xaxes(dtick=1, tickformat="d", showgrid=False)
-    fig.update_yaxes(ticksuffix=" ", tickformat="~s", title_text="XPF")
+    _layout(fig, height=height, hovermode="x unified", showlegend=len(series) > 1)
+    if x_is_month:
+        fig.update_xaxes(tickformat="%m/%Y", showgrid=False)
+    else:
+        fig.update_xaxes(dtick=1, tickformat="d", showgrid=False)
+    fig.update_yaxes(tickformat="~s", rangemode="tozero")
     return fig
 
 
-def campagnes_by_month(df_campagnes: pd.DataFrame) -> go.Figure:
-    """Saisonnalité : nombre de campagnes par mois de début."""
-    counts = (
-        df_campagnes.dropna(subset=["mois"])["mois"].astype(int)
-        .value_counts().reindex(range(1, 13), fill_value=0)
-    )
+def bars(labels: Sequence, values: Sequence, *, horizontal: bool = False,
+         unit: str = "", height: int | None = None, decimals: int = 0) -> go.Figure:
+    """Une série, une couleur ; valeurs affichées au bout des barres."""
+    labels, values = [str(v) for v in labels], list(values)
+    texts = [f"{v:,.{decimals}f}".replace(",", " ").replace(".", ",") for v in values]
+    value_axis, label_axis = ("x", "y") if horizontal else ("y", "x")
+    hover = f"%{{{label_axis}}} : %{{{value_axis}:,.{decimals}f}}" + (f" {unit}" if unit else "")
     fig = go.Figure(go.Bar(
-        x=MOIS, y=counts.values, marker={"color": SERIES["recette"], "cornerradius": 4},
-        hovertemplate="%{x} : %{y} campagnes<extra></extra>",
+        x=values if horizontal else labels, y=labels if horizontal else values,
+        orientation="h" if horizontal else "v",
+        marker={"color": PALETTE[0], "cornerradius": 4},
+        text=texts, textposition="outside", cliponaxis=False,
+        hovertemplate=hover + "<extra></extra>",
     ))
-    _layout(fig, bargap=0.25, height=300)
-    fig.update_xaxes(showgrid=False)
-    return fig
-
-
-def _horizontal_bar(labels, values, *, hover: str, suffix: str = "",
-                    height: int | None = None) -> go.Figure:
-    """Barres horizontales triées, une seule série donc une seule couleur."""
-    fig = go.Figure(go.Bar(
-        x=values, y=labels, orientation="h",
-        marker={"color": SERIES["recette"], "cornerradius": 4},
-        text=[f"{v:,.0f}{suffix}".replace(",", " ") for v in values],
-        textposition="outside", cliponaxis=False,
-        hovertemplate=hover,
-    ))
-    _layout(fig, bargap=0.3, height=height or max(240, 34 * len(labels) + 40))
-    fig.update_yaxes(autorange="reversed", showgrid=False)
-    # Marge à droite (et à gauche si négatif) pour les étiquettes extérieures.
-    values = list(values)
-    high = max([0, *values])
-    low = min([0, *values])
+    finite = [v for v in values if pd.notna(v)]
+    high, low = max([0, *finite]), min([0, *finite])
     span = (high - low) or 1
-    fig.update_xaxes(showticklabels=False, showgrid=False, zeroline=True,
-                     range=[low - 0.22 * span * (low < 0), high + 0.22 * span])
+    if horizontal:
+        _layout(fig, bargap=0.3, height=height or max(200, 30 * len(labels) + 40))
+        fig.update_yaxes(autorange="reversed", showgrid=False)
+        fig.update_xaxes(showticklabels=False, showgrid=False,
+                         range=[low - 0.25 * span * (low < 0), high + 0.25 * span])
+    else:
+        _layout(fig, bargap=0.3, height=height or 280)
+        fig.update_xaxes(showgrid=False, type="category")
+        fig.update_yaxes(showticklabels=False, showgrid=False,
+                         range=[low - 0.2 * span * (low < 0), high + 0.2 * span])
     return fig
 
 
-def top_especes_chart(df: pd.DataFrame) -> go.Figure:
-    return _horizontal_bar(
-        df["Espèce"], df["Poids"],
-        hover="%{y}<br>Poids : %{x:,.0f}<extra></extra>",
-    )
-
-
-def frais_chart(df: pd.DataFrame) -> go.Figure:
-    return _horizontal_bar(
-        df["Poste"], df["Montant (XPF)"],
-        hover="%{y}<br>%{x:,.0f} XPF<extra></extra>",
-    )
-
-
-def commune_chart(df: pd.DataFrame) -> go.Figure:
-    return _horizontal_bar(
-        df["Commune"], df["Bénéfice moyen (XPF)"],
-        hover="%{y}<br>Bénéfice moyen : %{x:,.0f} XPF<extra></extra>",
-    )
+def box_by_year(df: pd.DataFrame, x: str, y: str, *, unit: str = "") -> go.Figure:
+    """Distribution d'une mesure par année, sans montrer les valeurs individuelles."""
+    fig = go.Figure(go.Box(
+        x=df[x].astype(str), y=df[y], marker={"color": PALETTE[0]},
+        line={"width": 1.5}, boxpoints=False, name=y,
+        hoverinfo="skip",
+    ))
+    _layout(fig, height=300, showlegend=False)
+    fig.update_xaxes(showgrid=False, type="category")
+    fig.update_yaxes(tickformat="~s", zeroline=True, zerolinewidth=1.5)
+    return fig
 
 
 def to_html(fig: go.Figure, div_id: str) -> str:

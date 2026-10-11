@@ -1,85 +1,31 @@
-"""Génère reporting/performance_campagnes/index.html depuis le DTM.
+"""Génère la restitution HTML des 17 indicateurs depuis le DWH et le DTM.
 
-    python -m reporting.build_report            # lit la base configurée dans .env
-    python -m reporting.build_report --demo     # jeu fictif, sans base
-    python -m reporting.build_report --annee 2023 --annee 2024
+    python -m reporting.build_report                     # lit la base du .env
+    python -m reporting.build_report --date-ref 2025-12-31
+    python -m reporting.build_report --watch             # se régénère à chaque ajout en base
+    python -m reporting.build_report --demo              # données fictives, sans base
 """
 from __future__ import annotations
 
 import argparse
 import logging
 import sys
-from dataclasses import dataclass
-from datetime import datetime
+import time
+from datetime import date, datetime
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import plotly.offline
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from reporting import charts, kpis
-from reporting.data import DtmData, demo_data, load_dtm
+from reporting import charts, indicateurs
+from reporting.data import SidData, demo_data, fingerprint, load
+from reporting.formatting import format_date
+from reporting.restitution import HYPOTHESES, build_themes
 
 REPORTING_DIR = Path(__file__).resolve().parent
 DEFAULT_OUTPUT = REPORTING_DIR / "performance_campagnes" / "index.html"
-
-
-@dataclass(frozen=True)
-class Section:
-    id: str
-    title: str
-    subtitle: str
-    chart_html: str
-    table_html: str
-    note: str = ""
-    wide: bool = False
-
-
-def _table(df: pd.DataFrame) -> str:
-    """Vue tableau d'un graphique, nombres formatés à la française."""
-    formatted = df.copy()
-    for column in formatted.columns:
-        if pd.api.types.is_float_dtype(formatted[column]):
-            decimals = 1 if "%" in column else 0
-            formatted[column] = formatted[column].map(
-                lambda v, d=decimals: kpis.format_number(v, d))
-    return formatted.to_html(index=False, border=0, classes="data-table", na_rep="–")
-
-
-def build_sections(data: DtmData) -> list[Section]:
-    """Assemble les graphiques et leur vue tableau."""
-    finance = kpis.yearly_finance(data)
-    especes = kpis.top_especes(data)
-    frais = kpis.frais_par_nature(data)
-    communes = kpis.benefice_par_commune(data)
-    mois = (
-        data.campagnes.dropna(subset=["mois"])["mois"].astype(int)
-        .value_counts().reindex(range(1, 13), fill_value=0)
-    )
-    return [
-        Section("finance", "Recette, dépense et bénéfice par année",
-                "Somme des campagnes, rattachées à leur année de début",
-                charts.to_html(charts.finance_by_year(finance), "chart-finance"),
-                _table(finance), wide=True),
-        Section("saison", "Campagnes par mois de début",
-                "Saisonnalité de l'activité",
-                charts.to_html(charts.campagnes_by_month(data.campagnes), "chart-saison"),
-                _table(pd.DataFrame({"Mois": charts.MOIS, "Campagnes": mois.values}))),
-        Section("especes", "Top 10 des espèces en poids",
-                "Poids entier cumulé par catégorie d'espèce",
-                charts.to_html(charts.top_especes_chart(especes), "chart-especes"),
-                _table(especes)),
-        Section("frais", "Répartition des frais par poste",
-                "Montant total par nature de frais, en XPF",
-                charts.to_html(charts.frais_chart(frais), "chart-frais"),
-                _table(frais),
-                note="Les salaires ne figurent pas dans le détail des frais : "
-                     "la somme des postes est donc inférieure à la dépense."),
-        Section("communes", "Bénéfice moyen par commune du capitaine",
-                "Les 10 communes comptant le plus de campagnes, en XPF",
-                charts.to_html(charts.commune_chart(communes), "chart-communes"),
-                _table(communes)),
-    ]
 
 
 def plotly_script_tag(mode: str) -> str:
@@ -91,71 +37,128 @@ def plotly_script_tag(mode: str) -> str:
             'charset="utf-8"></script>')
 
 
-def render_report(data: DtmData, *, source: str, years: list[int] | None = None,
-                  plotly_mode: str = "cdn") -> str:
-    """Produit la page HTML complète du rapport."""
-    env = Environment(
-        loader=FileSystemLoader(REPORTING_DIR / "templates"),
-        autoescape=select_autoescape(["html", "j2"]),
-        trim_blocks=True,
-        lstrip_blocks=True,
-    )
-    template = env.get_template("performance_campagnes.html.j2")
-    available_years = sorted(int(y) for y in data.campagnes["annee"].dropna().unique())
-    return template.render(
-        title="Performance des campagnes de pêche",
+def render(d: SidData, *, source: str, date_ref: pd.Timestamp, plotly_mode: str = "cdn",
+           export_name: str = "", refresh_seconds: int = 0) -> str:
+    """Produit la page HTML complète de la restitution."""
+    env = Environment(loader=FileSystemLoader(REPORTING_DIR / "templates"),
+                      autoescape=select_autoescape(["html", "j2"]),
+                      trim_blocks=True, lstrip_blocks=True)
+    return env.get_template("restitution.html.j2").render(
+        title="Restitution — SID Pêche Province Sud",
         generated_at=datetime.now().strftime("%d/%m/%Y à %H:%M"),
+        date_ref=format_date(date_ref),
         source=source,
-        years=years or available_years,
-        kpis=kpis.compute_kpis(data),
-        quality=kpis.compute_quality(data),
-        sections=build_sections(data),
+        hypotheses=HYPOTHESES,
+        themes=build_themes(d, date_ref, export_name),
         plotly_script=plotly_script_tag(plotly_mode),
         series_dark=charts.SERIES_DARK,
+        refresh_seconds=refresh_seconds,
     )
+
+
+def write_report(d: SidData, output: Path, *, source: str, date_ref: pd.Timestamp,
+                 plotly_mode: str = "cdn", refresh_seconds: int = 0) -> Path:
+    """Écrit la page et l'export CSV des campagnes actives (3.4.4)."""
+    output.parent.mkdir(parents=True, exist_ok=True)
+    export = output.parent / f"campagnes_actives_{date_ref:%Y-%m-%d}.csv"
+    actives = indicateurs.campagnes_actives(d, date_ref)
+    if len(actives):
+        # Le détail n'est pas affiché dans la restitution : il est seulement
+        # proposé en export, comme le demande la fiche pour l'indicateur 3.4.4.
+        actives.to_csv(export, index=False, sep=";", encoding="utf-8-sig", date_format="%d/%m/%Y")
+    html = render(d, source=source, date_ref=date_ref, plotly_mode=plotly_mode,
+                  export_name=export.name if len(actives) else "",
+                  refresh_seconds=refresh_seconds)
+    output.write_text(html, encoding="utf-8")
+    logging.info("Restitution générée : %s", output)
+    return output
+
+
+def generate_from_connection(connection: Any, db_engine: str, *, output: Path = DEFAULT_OUTPUT,
+                             date_ref: date | None = None, plotly_mode: str = "cdn",
+                             refresh_seconds: int = 0) -> Path:
+    """Point d'entrée du pipeline : lit la base ouverte et écrit la restitution."""
+    data = load(connection)
+    connection.commit()
+    engine = "PostgreSQL" if db_engine == "postgresql" else "SQL Server"
+    return write_report(data, output, source=f"DWH dwh et DTM ({engine})",
+                        date_ref=pd.Timestamp(date_ref or date.today()),
+                        plotly_mode=plotly_mode, refresh_seconds=refresh_seconds)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description="Génère la restitution HTML des indicateurs")
     parser.add_argument("--demo", action="store_true",
                         help="utilise un jeu de données fictif au lieu de la base")
-    parser.add_argument("--annee", type=int, action="append",
-                        help="restreint le rapport à une année (option répétable)")
+    parser.add_argument("--date-ref", type=date.fromisoformat, default=None,
+                        help="date de référence AAAA-MM-JJ (défaut : aujourd'hui)")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT,
-                        help=f"fichier généré (défaut : {DEFAULT_OUTPUT.relative_to(REPORTING_DIR.parent)})")
+                        help="fichier HTML généré")
     parser.add_argument("--plotly", choices=("cdn", "inline"), default="cdn",
                         help="inline intègre Plotly.js (~4 Mo) pour un usage hors ligne")
-    return parser.parse_args(argv)
+    parser.add_argument("--watch", nargs="?", type=int, const=30, default=0, metavar="SECONDES",
+                        help="surveille la base et régénère dès qu'une donnée change "
+                             "(vérification toutes les 30 s par défaut)")
+    args = parser.parse_args(argv)
+    if args.watch and args.demo:
+        parser.error("--watch lit la base : il est incompatible avec --demo")
+    return args
+
+
+def watch(args: argparse.Namespace) -> int:
+    """Régénère la restitution à chaque changement du DWH ou du DTM."""
+    from src.config import load_settings
+    from src.database.connection import connect
+
+    settings = load_settings(require_api_key=False)
+    last = None
+    logging.info("Surveillance de la base toutes les %d s (Ctrl+C pour arrêter)", args.watch)
+    try:
+        while True:
+            try:
+                with connect(settings) as connection:
+                    current = fingerprint(connection)
+                    # La date du jour fait aussi partie de l'état : à minuit, les
+                    # indicateurs « à une date » changent sans nouvelle donnée.
+                    state = (current, args.date_ref or date.today())
+                    if state != last:
+                        logging.info("Changement détecté (%s) : régénération", current)
+                        generate_from_connection(
+                            connection, settings.db_engine, output=args.output,
+                            date_ref=args.date_ref, plotly_mode=args.plotly,
+                            refresh_seconds=args.watch)
+                        last = state
+            except Exception as exc:  # la surveillance survit à une base indisponible
+                logging.error("Lecture impossible, nouvel essai dans %d s : %s", args.watch, exc)
+            time.sleep(args.watch)
+    except KeyboardInterrupt:
+        logging.info("Surveillance arrêtée.")
+        return 0
 
 
 def run(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.watch:
+        return watch(args)
     if args.demo:
-        data, source = demo_data(), "Jeu de démonstration (données fictives)"
-    else:
-        # Import différé : le mode démo fonctionne sans pilote ni .env.
-        from src.config import load_settings
-        from src.database.connection import connect
+        date_ref = pd.Timestamp(args.date_ref or date.today())
+        write_report(demo_data(today=date_ref.date()), args.output,
+                     source="Jeu de démonstration (données fictives)",
+                     date_ref=date_ref, plotly_mode=args.plotly)
+        return 0
 
-        try:
-            settings = load_settings(require_api_key=False)
-            with connect(settings) as connection:
-                data = load_dtm(connection)
-        except Exception as exc:
-            logging.error("Lecture du DTM impossible : %s", exc)
-            return 1
-        engine = "PostgreSQL" if settings.db_engine == "postgresql" else "SQL Server"
-        source = f"DTM dtm_performance_campagnes ({engine})"
+    # Import différé : le mode démo fonctionne sans pilote ni .env.
+    from src.config import load_settings
+    from src.database.connection import connect
 
-    data = data.filter_years(args.annee)
-    if data.campagnes.empty:
-        logging.error("Aucune campagne à présenter pour ce périmètre.")
+    try:
+        settings = load_settings(require_api_key=False)
+        with connect(settings) as connection:
+            generate_from_connection(connection, settings.db_engine, output=args.output,
+                                     date_ref=args.date_ref, plotly_mode=args.plotly)
+    except Exception as exc:
+        logging.error("Génération de la restitution impossible : %s", exc)
         return 1
-
-    html = render_report(data, source=source, years=args.annee, plotly_mode=args.plotly)
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(html, encoding="utf-8")
-    logging.info("Rapport généré : %s (%d campagnes)", args.output, len(data.campagnes))
     return 0
 
 

@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+{% if refresh_seconds %}<meta http-equiv="refresh" content="{{ refresh_seconds }}">{% endif %}
 <title>{{ title }}</title>
 <style>
 :root {
@@ -74,7 +75,7 @@ h2 { font-size: 16px; margin: 0; }
   font-variant-numeric: tabular-nums; margin: 4px 0 2px; }
 .kpi .unit { font-size: 14px; font-weight: 500; color: var(--text-secondary); }
 .kpi .detail { font-size: 12px; color: var(--text-muted); }
-.grid { display: grid; gap: 16px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.grid { display: grid; gap: 16px; align-items: start; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .grid .wide { grid-column: 1 / -1; }
 @media (max-width: 860px) { .grid { grid-template-columns: minmax(0, 1fr); } }
 .card header { margin-bottom: 8px; }
@@ -94,6 +95,28 @@ td.text, th.text { text-align: left; }
 .warning { background: var(--surface-1); border: 1px solid var(--border);
   border-left: 4px solid var(--accent); border-radius: 8px; padding: 10px 14px;
   font-size: 13px; color: var(--text-secondary); margin-bottom: 16px; }
+nav.themes { position: sticky; top: 0; z-index: 5; display: flex; gap: 6px;
+  flex-wrap: wrap; padding: 10px 0; margin-bottom: 8px; background: var(--surface-0); }
+nav.themes a { text-decoration: none; color: var(--text-secondary); font-size: 13px;
+  border: 1px solid var(--border); border-radius: 999px; padding: 4px 12px;
+  background: var(--surface-1); }
+nav.themes a:hover { color: var(--text-primary); border-color: var(--accent); }
+section.theme { scroll-margin-top: 56px; margin: 28px 0 8px; }
+section.theme > header { margin-bottom: 12px; }
+h2.theme-title { font-size: 20px; margin: 0; }
+.code { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .02em;
+  color: var(--accent); border: 1px solid var(--border); border-radius: 6px;
+  padding: 1px 6px; margin-right: 6px; vertical-align: 2px; }
+.definition { color: var(--text-secondary); font-size: 13px; margin: 2px 0 10px; }
+.mini-kpis { display: flex; flex-wrap: wrap; gap: 8px 24px; margin: 4px 0 8px; }
+.mini-kpis .value { font-size: 24px; }
+.notes { margin: 8px 0 0; padding-left: 18px; color: var(--text-secondary); font-size: 12px; }
+.excluded { font-size: 12px; color: var(--text-muted); margin-top: 8px; }
+h4 { font-size: 13px; margin: 14px 0 0; color: var(--text-secondary); }
+.export { display: inline-block; margin-top: 8px; font-size: 13px; color: var(--accent); }
+details.hypotheses summary { font-size: 14px; }
+details.hypotheses ul { margin: 8px 0 0; padding-left: 18px; font-size: 13px;
+  color: var(--text-secondary); }
 footer { margin-top: 32px; font-size: 12px; color: var(--text-muted); }
 </style>
 {{ plotly_script | safe }}

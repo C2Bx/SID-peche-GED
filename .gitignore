@@ -14,3 +14,4 @@ data/raw/
 
 # Rapports générés
 reporting/*/index.html
+reporting/*/campagnes_actives_*.csv

@@ -195,31 +195,55 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-## Rapport HTML
+## Restitution HTML
 
-`reporting/` génère un tableau de bord HTML autonome (KPI, graphiques Plotly,
-contrôles qualité) à partir du DTM `dtm_performance_campagnes`. Il lit
-uniquement le DTM, avec la même configuration `.env` que le pipeline, sur
-PostgreSQL comme sur SQL Server.
+`reporting/` calcule les **17 indicateurs** de la fiche « Indicateurs de la
+restitution » et les publie dans une page HTML autonome :
+`reporting/performance_campagnes/index.html`. Chaque fonction de
+`reporting/indicateurs.py` reproduit la mesure DAX de référence de la fiche
+(numéro d'indicateur en docstring) et lit le DWH `dwh` et le DTM
+`dtm_performance_campagnes`, sur PostgreSQL comme sur SQL Server.
+
+| Thème | Indicateurs |
+|---|---|
+| Sociologique | 3.1.1 pêcheurs actifs · 3.1.2 évolution, âge, genre, commune · 3.1.3 expérience · 3.1.4 capitaines et patrons |
+| Matériel | 3.2.1 navires · 3.2.2 âge de la flotte · 3.2.4 motorisation (3.2.3 et 3.2.5 exclus par le SFD) |
+| Environnemental | 3.3.1 captures par mois · 3.3.2 par espèce · 3.3.3 par zone |
+| Activité | 3.4.1 campagnes par mois · 3.4.2 durée · 3.4.3 captures par campagne · 3.4.4 campagnes actives |
+| Économique | 3.5.1 par pêcheur · 3.5.2 par campagne · 3.5.3 coûts (3.5.4 exclu par le SFD) |
+
+La restitution n'affiche **aucune donnée brute** : uniquement des indicateurs
+et des agrégats, sans identifiant de pêcheur, de campagne ou de capture. La
+liste des campagnes actives (3.4.4) n'est proposée qu'en export CSV, à côté de
+la page. Les hypothèses de la fiche (pêcheur = capitaine, tranches d'âge, seuil
+de 1950…) sont rappelées dans la page.
+
+### Actualisation
+
+La restitution suit le contenu de la base :
+
+- `python main.py`, `--dwh-only` et `--dtm-only` la **régénèrent
+  automatiquement** après les DTM (`--sans-rapport` pour s'en passer). Après
+  un ajout dans les sources, `python main.py --dwh-only` reconstruit le DWH,
+  les DTM puis la page.
+- `python -m reporting.build_report --watch` **surveille** le DWH et les DTM
+  (nombre de lignes de chaque table lue, toutes les 30 s par défaut) et
+  régénère la page dès qu'une donnée change ; la page ouverte se recharge
+  seule. `Ctrl+C` arrête la surveillance.
 
 ```bash
-python -m reporting.build_report                   # depuis la base
-python -m reporting.build_report --demo            # données fictives, sans base
-python -m reporting.build_report --annee 2024      # une ou plusieurs années
-python -m reporting.build_report --plotly inline   # fichier utilisable hors ligne
+python -m reporting.build_report                        # depuis la base (.env)
+python -m reporting.build_report --date-ref 2025-12-31  # date de référence (défaut : aujourd'hui)
+python -m reporting.build_report --watch 60             # surveillance toutes les 60 s
+python -m reporting.build_report --demo                 # données fictives, sans base
+python -m reporting.build_report --plotly inline        # fichier utilisable hors ligne
 ```
-
-Le fichier est écrit dans `reporting/performance_campagnes/index.html` (non
-versionné). Il s'ouvre directement dans un navigateur et suit le thème clair ou
-sombre du système. Chaque graphique propose sa vue tableau.
 
 | Fichier | Rôle |
 |---|---|
-| `reporting/data.py` | lecture des trois tables du DTM, jeu de démonstration |
-| `reporting/kpis.py` | indicateurs, agrégations et contrôles qualité |
-| `reporting/charts.py` | figures Plotly et charte graphique |
+| `reporting/data.py` | requêtes DWH/DTM, empreinte de la base, jeu de démonstration |
+| `reporting/indicateurs.py` | calcul des indicateurs, une fonction par mesure de la fiche |
+| `reporting/restitution.py` | regroupement en thèmes, textes, hypothèses |
+| `reporting/charts.py` | graphiques Plotly et charte |
 | `reporting/templates/` | gabarits Jinja2 de la page |
-| `reporting/build_report.py` | ligne de commande et assemblage |
-
-Les montants proviennent du grain campagne. L'axe navire, indicatif, n'est
-volontairement pas représenté.
+| `reporting/build_report.py` | ligne de commande, export CSV, surveillance |
