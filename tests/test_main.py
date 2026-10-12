@@ -1,4 +1,3 @@
-import sys
 from argparse import Namespace
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -11,40 +10,34 @@ from src.config import TABLES
 from src.extraction.peche_extractor import ExtractionResult
 
 
-def test_from_json_option_has_french_and_english_names(monkeypatch) -> None:
-    """Vérifie les deux alias de l'option de chargement JSON local."""
-    monkeypatch.setattr(sys, "argv", ["main.py", "--depuis-json"])
-    assert parse_args().depuis_json is True
-
-    monkeypatch.setattr(sys, "argv", ["main.py", "--from-json"])
-    assert parse_args().depuis_json is True
-
-
 @pytest.mark.parametrize(
     "options",
     [
-        ["--ods-only", "--dwh-only"],
-        ["--ods-only", "--dtm-only"],
-        ["--dwh-only", "--dtm-only"],
+        ["--from-json", "--from-ods"],
+        ["--from-json", "--from-dwh"],
+        ["--from-json", "--from-dtm"],
+        ["--from-ods", "--from-dwh"],
+        ["--from-ods", "--from-dtm"],
+        ["--from-dwh", "--from-dtm"],
     ],
 )
-def test_pipeline_only_modes_are_mutually_exclusive(options: list[str]) -> None:
+def test_pipeline_starting_points_are_mutually_exclusive(options: list[str]) -> None:
     with pytest.raises(SystemExit):
         parse_args(options)
 
 
-def test_dwh_only_and_from_json_are_incompatible() -> None:
+def test_from_dtm_and_no_report_are_incompatible(capsys) -> None:
     with pytest.raises(SystemExit):
-        parse_args(["--dwh-only", "--depuis-json"])
+        parse_args(["--from-dtm", "--no-report"])
+    assert "aucune étape ne resterait à exécuter" in capsys.readouterr().err
 
 
-def test_dtm_only_and_from_json_are_incompatible() -> None:
+@pytest.mark.parametrize("legacy_option", [
+    "--sans-rapport", "--ods-only", "--dwh-only", "--dtm-only", "--depuis-json",
+])
+def test_legacy_options_are_rejected(legacy_option: str) -> None:
     with pytest.raises(SystemExit):
-        parse_args(["--dtm-only", "--depuis-json"])
-
-
-def test_dtm_only_option_is_parsed() -> None:
-    assert parse_args(["--dtm-only"]).dtm_only is True
+        parse_args([legacy_option])
 
 
 def test_positional_table_is_no_longer_accepted() -> None:
@@ -62,7 +55,11 @@ def _mock_pipeline(monkeypatch):
     monkeypatch.setattr(main, "connect", Mock(return_value=connection))
     monkeypatch.setattr(main, "check_connection", Mock())
     monkeypatch.setattr(main, "ensure_env_mer_exists", Mock())
-    run_ods = Mock(side_effect=lambda *_args: (events.append("ods") or ([], [])))
+    def fake_ods(_settings, args, _connection):
+        events.append("ods_json" if args.from_json else "ods")
+        return [], []
+
+    run_ods = Mock(side_effect=fake_ods)
     monkeypatch.setattr(main, "run_ods", run_ods)
     monkeypatch.setattr(
         main, "run_dwh", Mock(side_effect=lambda *_args: events.append("dwh"))
@@ -73,53 +70,40 @@ def _mock_pipeline(monkeypatch):
     monkeypatch.setattr(
         main,
         "run_report",
-        Mock(side_effect=lambda _c, _s, args: None if args.sans_rapport else events.append("rapport")),
+        Mock(side_effect=lambda _c, _s, args: None if args.no_report else events.append("rapport")),
     )
     monkeypatch.setattr(main, "print_summary", Mock())
     return events
 
 
-def test_dwh_only_skips_ods_and_does_not_require_api_key(monkeypatch) -> None:
+@pytest.mark.parametrize(("options", "expected"), [
+    ([], ["ods", "dwh", "dtm", "rapport"]),
+    (["--from-json"], ["ods_json", "dwh", "dtm", "rapport"]),
+    (["--from-ods"], ["dwh", "dtm", "rapport"]),
+    (["--from-dwh"], ["dtm", "rapport"]),
+    (["--from-dtm"], ["rapport"]),
+    (["--no-report"], ["ods", "dwh", "dtm"]),
+    (["--from-json", "--no-report"], ["ods_json", "dwh", "dtm"]),
+    (["--from-ods", "--no-report"], ["dwh", "dtm"]),
+    (["--from-dwh", "--no-report"], ["dtm"]),
+])
+def test_pipeline_sequence(monkeypatch, options: list[str], expected: list[str]) -> None:
     events = _mock_pipeline(monkeypatch)
-    assert main.run(["--dwh-only"]) == 0
-    assert events == ["dwh", "dtm", "rapport"]
+    assert main.run(options) == 0
+    assert events == expected
+
+
+@pytest.mark.parametrize("option", ["--from-json", "--from-ods", "--from-dwh", "--from-dtm"])
+def test_starting_from_existing_data_does_not_require_api_key(monkeypatch, option: str) -> None:
+    _mock_pipeline(monkeypatch)
+    assert main.run([option]) == 0
     main.load_settings.assert_called_once_with(require_api_key=False)
 
 
-def test_dtm_only_skips_ods_and_dwh_and_does_not_require_api_key(monkeypatch) -> None:
-    events = _mock_pipeline(monkeypatch)
-    assert main.run(["--dtm-only"]) == 0
-    assert events == ["dtm", "rapport"]
-    main.run_dwh.assert_not_called()
-    main.run_ods.assert_not_called()
-    main.load_settings.assert_called_once_with(require_api_key=False)
-
-
-def test_ods_only_skips_dwh(monkeypatch) -> None:
-    events = _mock_pipeline(monkeypatch)
-    assert main.run(["--ods-only"]) == 0
-    assert events == ["ods"]
-    main.run_dtms.assert_not_called()
-
-
-def test_default_mode_runs_ods_then_dwh_then_dtms(monkeypatch) -> None:
-    events = _mock_pipeline(monkeypatch)
+def test_default_mode_requires_api_key(monkeypatch) -> None:
+    _mock_pipeline(monkeypatch)
     assert main.run([]) == 0
-    assert events == ["ods", "dwh", "dtm", "rapport"]
-
-
-def test_from_json_runs_ods_then_dwh_then_dtms(monkeypatch) -> None:
-    events = _mock_pipeline(monkeypatch)
-    assert main.run(["--depuis-json"]) == 0
-    assert events == ["ods", "dwh", "dtm", "rapport"]
-    assert main.run_ods.call_args.args[1].depuis_json is True
-
-
-def test_from_json_with_ods_only_skips_dwh(monkeypatch) -> None:
-    events = _mock_pipeline(monkeypatch)
-    assert main.run(["--depuis-json", "--ods-only"]) == 0
-    assert events == ["ods"]
-    main.run_dtms.assert_not_called()
+    main.load_settings.assert_called_once_with(require_api_key=True)
 
 
 def test_run_ods_always_rebuilds_all_tables(monkeypatch, tmp_path) -> None:
@@ -131,7 +115,7 @@ def test_run_ods_always_rebuilds_all_tables(monkeypatch, tmp_path) -> None:
         api_key="",
         http_timeout=30,
     )
-    args = Namespace(depuis_json=True, ods_only=False, dwh_only=False)
+    args = Namespace(from_json=True)
     reset_tables = Mock()
     monkeypatch.setattr(main, "check_connection", Mock())
     monkeypatch.setattr(main, "reset_tables", reset_tables)
@@ -169,15 +153,3 @@ def test_dwh_failure_prevents_dtms(monkeypatch) -> None:
     assert main.run([]) == 1
     assert events == ["ods"]
     main.run_dtms.assert_not_called()
-
-
-def test_sans_rapport_skips_report(monkeypatch) -> None:
-    events = _mock_pipeline(monkeypatch)
-    assert main.run(["--sans-rapport"]) == 0
-    assert events == ["ods", "dwh", "dtm"]
-
-
-def test_ods_only_does_not_build_report(monkeypatch) -> None:
-    events = _mock_pipeline(monkeypatch)
-    assert main.run(["--ods-only"]) == 0
-    assert "rapport" not in events

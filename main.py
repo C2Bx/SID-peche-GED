@@ -27,37 +27,38 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # l'ODS, du DWH puis des DTM. Les options permettent de reprendre le pipeline
     # à une étape précise ou depuis les JSON locaux.
     parser = argparse.ArgumentParser(description="Import des données de pêche Province Sud")
-    parser.add_argument(
-        "--depuis-json",
+    starts = parser.add_mutually_exclusive_group()
+    starts.add_argument(
         "--from-json",
         action="store_true",
-        help="saute le téléchargement et charge la base depuis data/raw",
+        help="charge l'ODS depuis les fichiers JSON locaux, sans appel à l'API",
     )
-    modes = parser.add_mutually_exclusive_group()
-    modes.add_argument(
-        "--ods-only", action="store_true", help="construit uniquement l'ODS env_mer"
-    )
-    modes.add_argument(
-        "--dwh-only",
+    starts.add_argument(
+        "--from-ods",
         action="store_true",
-        help="reconstruit le DWH depuis l'ODS existant, puis les DTM",
+        help="reprend depuis l'ODS existant et construit le DWH puis les DTM",
     )
-    modes.add_argument(
-        "--dtm-only",
+    starts.add_argument(
+        "--from-dwh",
         action="store_true",
-        help="construit uniquement les DTM depuis le DWH existant",
+        help="reprend depuis le DWH existant et construit les DTM",
+    )
+    starts.add_argument(
+        "--from-dtm",
+        action="store_true",
+        help="reprend depuis les DTM existants et génère uniquement le rapport",
     )
     parser.add_argument(
-        "--sans-rapport",
+        "--no-report",
         action="store_true",
         help="ne régénère pas la restitution HTML après les DTM",
     )
     args = parser.parse_args(argv)
-    # Les modes DWH et DTM ne lisent aucun fichier source : leur associer le
-    # mode JSON serait contradictoire.
-    if (args.dwh_only or args.dtm_only) and args.depuis_json:
-        mode = "--dwh-only" if args.dwh_only else "--dtm-only"
-        parser.error(f"{mode} est incompatible avec --depuis-json/--from-json")
+    if args.from_dtm and args.no_report:
+        parser.error(
+            "--from-dtm est incompatible avec --no-report : "
+            "aucune étape ne resterait à exécuter"
+        )
     return args
 
 
@@ -103,7 +104,7 @@ def run_ods(settings: object, args: argparse.Namespace, connection: object) -> t
     # place les lignes référencées avant celles portant les clés étrangères.
     selected_tables = list(TABLES)
     validate_reset_scope(selected_tables)
-    if args.depuis_json:
+    if args.from_json:
         # Tous les fichiers sont contrôlés avant de détruire les tables afin
         # qu'une source locale manquante ne laisse pas un ODS vide.
         logging.info("Mode JSON local : aucun appel à la source")
@@ -154,7 +155,7 @@ def run_ods(settings: object, args: argparse.Namespace, connection: object) -> t
                 pages_by_table[table_name],
             )
         )
-        if args.depuis_json:
+        if args.from_json:
             # Faute de réponse API, le nombre d'objets du JSON devient la mesure
             # source affichée dans le bilan final.
             imported = results[-1]
@@ -183,7 +184,7 @@ def run_ods(settings: object, args: argparse.Namespace, connection: object) -> t
 
 def run_report(connection: object, settings: object, args: argparse.Namespace) -> None:
     """Régénère la restitution HTML depuis les DTM et le DWH tout juste construits."""
-    if args.sans_rapport:
+    if args.no_report:
         return
     # Import différé : Plotly et pandas ne sont chargés que si le rapport est
     # produit, ce qui garde l'ETL seul utilisable sans ces dépendances.
@@ -198,51 +199,45 @@ def run(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
         # La clé API n'est exigée que lorsqu'un téléchargement est prévu.
-        settings = load_settings(
-            require_api_key=not (
-                args.depuis_json or args.dwh_only or args.dtm_only
-            )
+        starts_from_existing_data = (
+            args.from_json or args.from_ods or args.from_dwh or args.from_dtm
         )
+        settings = load_settings(require_api_key=not starts_from_existing_data)
     except ValueError as exc:
         logging.error("Configuration invalide : %s", exc)
         return 2
     try:
         with connect(settings) as connection:
-            if args.dtm_only:
-                # Les scripts vérifient eux-mêmes les tables DWH détaillées dont
-                # ils dépendent ; aucune reconstruction amont n'est déclenchée.
-                check_connection(connection)
-                run_dtms(connection, settings.db_engine)
-                run_report(connection, settings, args)
-                return 0
+            starts_after_ods = args.from_dwh or args.from_dtm
+            starts_after_dwh = args.from_dtm
+            rebuilds_ods = not (args.from_ods or starts_after_ods)
 
-            if args.dwh_only:
-                # Le DWH repose sur un ODS existant, contrôlé avant le lancement
-                # du script SQL sans relire les sources.
+            # Quand l'ODS n'est pas reconstruit, on contrôle explicitement la
+            # connexion avant de reprendre sur les structures existantes.
+            if args.from_ods or starts_after_ods:
                 check_connection(connection)
+
+            downloads: list[DownloadResult] = []
+            results: list[ExtractionResult] = []
+            if rebuilds_ods:
+                downloads, results = run_ods(settings, args, connection)
+
+            if not starts_after_ods:
                 ensure_env_mer_exists(connection, settings.db_engine)
                 run_dwh(connection, settings.db_engine)
-                # Les DTM lisent le DWH : les laisser en l'état les rendrait
-                # incohérents avec le DWH tout juste reconstruit.
-                run_dtms(connection, settings.db_engine)
-                run_report(connection, settings, args)
-                return 0
 
-            downloads, results = run_ods(settings, args, connection)
-            if not args.ods_only:
-                # En mode normal ou JSON local, le DWH n'est construit qu'après
-                # la reconstruction et l'exécution des contrôles prévus sur l'ODS.
-                ensure_env_mer_exists(connection, settings.db_engine)
-                run_dwh(connection, settings.db_engine)
+            if not starts_after_dwh:
                 run_dtms(connection, settings.db_engine)
-                run_report(connection, settings, args)
+
+            run_report(connection, settings, args)
     except Exception as exc:
         # Toute erreur bloque les étapes suivantes et renvoie un code non nul
         # exploitable par un ordonnanceur ou un outil d'intégration.
         logging.error("Pipeline interrompu : %s", exc)
         return 1
 
-    print_summary(downloads, results, time.monotonic() - started_at)
+    if rebuilds_ods:
+        print_summary(downloads, results, time.monotonic() - started_at)
     return 0
 
 

@@ -35,23 +35,24 @@ pip install -r requirements.txt
 python main.py
 ```
 
-Par défaut, cette commande exécute le workflow complet : téléchargement
-(ou lecture JSON), reconstruction et contrôles de l'ODS `env_mer`, puis
-construction du DWH `dwh` dans la même base `peche_nc`.
+Par défaut, cette commande exécute le workflow complet : téléchargement depuis
+l'API, reconstruction et contrôles de l'ODS `env_mer`, construction du DWH
+`dwh`, des DTM, puis génération du reporting HTML.
 
 ```bash
-python main.py                    # API -> ODS -> DWH -> DTM
-python main.py --ods-only         # API -> ODS uniquement
-python main.py --dwh-only         # env_mer existant -> DWH -> DTM
-python main.py --dtm-only         # DWH existant -> DTM uniquement
-python main.py --depuis-json      # JSON existants -> ODS -> DWH -> DTM
-python main.py --depuis-json --ods-only  # JSON existants -> ODS uniquement
+python main.py              # API -> ODS -> DWH -> DTM -> reporting
+python main.py --from-json  # JSON locaux -> ODS -> DWH -> DTM -> reporting
+python main.py --from-ods   # ODS existant -> DWH -> DTM -> reporting
+python main.py --from-dwh   # DWH existant -> DTM -> reporting
+python main.py --from-dtm   # DTM existants -> reporting uniquement
 ```
 
-Le mode `--dwh-only` n'appelle pas l'API et ne requiert donc pas
-`PROVINCE_SUD_API_KEY`. Il reconstruit aussi les DTM, qui lisent le DWH et
-seraient sinon désynchronisés. Les options `--ods-only`, `--dwh-only` et
-`--dtm-only` sont mutuellement exclusives.
+Les quatre options `--from-*` sont mutuellement exclusives et indiquent le
+point de reprise du pipeline. Elles n'appellent pas l'API et ne requièrent donc
+pas `PROVINCE_SUD_API_KEY`. L'option `--no-report` peut être ajoutée pour
+arrêter le pipeline après les DTM, ou après la dernière reconstruction demandée.
+Elle est incompatible avec `--from-dtm`, qui ne laisserait alors aucune étape à
+exécuter.
 
 Le fichier `docker-compose.yml` reste dédié à PostgreSQL. Pour SQL Server sous
 Windows, installer SQL Server (Express ou Developer), SQL Server Management
@@ -77,11 +78,10 @@ Pour reconstruire et remplir PostgreSQL uniquement depuis les JSON déjà
 présents dans `data/raw/`, sans aucun appel à l'API ni rotation des fichiers :
 
 ```bash
-python main.py --depuis-json
+python main.py --from-json
 ```
 
-L'alias anglais `python main.py --from-json` est également disponible. La clé
-`PROVINCE_SUD_API_KEY` n'est pas obligatoire dans ce mode.
+La clé `PROVINCE_SUD_API_KEY` n'est pas obligatoire dans ce mode.
 
 Les copies JSON sont écrites progressivement dans `data/raw/`. Pour arrêter la
 base, utiliser `docker compose down`; ajouter `-v` supprime volontairement son
@@ -225,10 +225,10 @@ Les hypothèses de la fiche (pêcheur = capitaine, tranches d'âge, seuil de
 
 La restitution suit le contenu de la base :
 
-- `python main.py`, `--dwh-only` et `--dtm-only` la **régénèrent
-  automatiquement** après les DTM (`--sans-rapport` pour s'en passer). Après
-  un ajout dans les sources, `python main.py --dwh-only` reconstruit le DWH,
-  les DTM puis la page.
+- `python main.py` et tous les points de reprise `--from-*` la **régénèrent
+  automatiquement** après la dernière étape (`--no-report` pour s'en passer,
+  sauf avec `--from-dtm`). Après un ajout dans l'ODS,
+  `python main.py --from-ods` reconstruit le DWH, les DTM puis la page.
 - `python -m src.reporting.build_report --watch` **surveille** le DWH et les DTM
   (nombre de lignes de chaque table lue, toutes les 30 s par défaut) et
   régénère la page dès qu'une donnée change ; la page ouverte se recharge
