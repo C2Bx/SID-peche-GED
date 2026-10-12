@@ -39,13 +39,20 @@
       </div>
       {% endif %}
       {{ ind.chart_html | safe }}
-      {% if ind.export %}<a class="export" href="{{ ind.export }}" download>Exporter la liste (CSV)</a>{% endif %}
+      {% if ind.csv_export %}
+      <button class="export" type="button"
+              data-csv-filename="campagnes_actives_{{ date_ref_iso }}.csv">Exporter en CSV</button>
+      {% endif %}
       {% if ind.notes %}<ul class="notes">{% for n in ind.notes %}<li>{{ n }}</li>{% endfor %}</ul>{% endif %}
       {% if ind.table_html %}
+      {% if ind.table_visible %}
+      <div class="table-wrap" data-csv-table>{{ ind.table_html | safe }}</div>
+      {% else %}
       <details>
         <summary>Voir les chiffres</summary>
         <div class="table-wrap">{{ ind.table_html | safe }}</div>
       </details>
+      {% endif %}
       {% endif %}
     </article>
     {% endfor %}
@@ -55,6 +62,6 @@
 {% endfor %}
 
 <footer>
-  Généré par <code>python -m reporting.build_report</code> · indicateurs conformes à la fiche « Indicateurs de la restitution »
+  Généré par <code>python -m src.reporting.build_report</code> · indicateurs conformes à la fiche « Indicateurs de la restitution »
 </footer>
 {% endblock %}

@@ -4,10 +4,10 @@ from datetime import date
 import pandas as pd
 import pytest
 
-from reporting import build_report
-from reporting import indicateurs as ind
-from reporting.data import QUERIES, SidData, demo_data, fingerprint, load
-from reporting.formatting import format_compact, format_number
+from src.reporting import build_report
+from src.reporting import indicateurs as ind
+from src.reporting.data import QUERIES, SidData, demo_data, fingerprint, load
+from src.reporting.formatting import format_compact, format_number
 
 REF = pd.Timestamp(2026, 6, 30)
 CODES = ["3.1.1", "3.1.2", "3.1.3", "3.1.4", "3.2.1", "3.2.2", "3.2.4", "3.3.1",
@@ -253,18 +253,25 @@ def test_fingerprint_changes_with_counts() -> None:
     assert connection.commits == 2
 
 
-def test_report_contains_all_indicators_and_no_raw_rows(tmp_path) -> None:
+def test_report_contains_all_indicators_and_browser_csv_export(tmp_path) -> None:
     output = tmp_path / "index.html"
     assert build_report.run(["--demo", "--date-ref", "2026-10-12",
                              "--output", str(output)]) == 0
     html = output.read_text(encoding="utf-8")
     for code in CODES:
         assert f'<span class="code">{code}</span>' in html
-    # Restitution : aucun identifiant de campagne, de capture ou de pêcheur.
-    assert not re.search(r"CAMP-\d|CAP-\d|\bP\d{3}\b", html)
+    # Seul le détail demandé par le 3.4.4 est affiché ; aucune capture brute.
+    assert not re.search(r"CAP-\d", html)
     assert "Exclus par le SFD : 3.2.3, 3.2.5" in html and "3.5.4" in html
-    export = tmp_path / "campagnes_actives_2026-10-12.csv"
-    assert export.exists() and "Campagne;Capitaine" in export.read_text(encoding="utf-8-sig")
+    assert "Identifiant de campagne" in html
+    assert "Capitaine" in html
+    assert "Date de début" in html and "Date de fin" in html
+    assert "Durée" in html and "Jours en mer" in html and "Jours de pêche" in html
+    assert 'data-csv-filename="campagnes_actives_2026-10-12.csv"' in html
+    assert "Exporter en CSV" in html
+    assert 'join(";")' in html and "text/csv;charset=utf-8" in html
+    assert list(tmp_path.iterdir()) == [output]
+    assert not list(tmp_path.glob("*.csv"))
 
 
 def test_watch_is_incompatible_with_demo() -> None:

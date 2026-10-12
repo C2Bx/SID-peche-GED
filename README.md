@@ -197,10 +197,11 @@ python -m pytest
 
 ## Restitution HTML
 
-`reporting/` calcule les **17 indicateurs** de la fiche « Indicateurs de la
-restitution » et les publie dans une page HTML autonome :
+`src/reporting/` calcule les **17 indicateurs** de la fiche « Indicateurs de la
+restitution » et les publie dans une page HTML autonome. Le dossier
+`reporting/` est réservé aux artefacts générés destinés à être consultés ou livrés :
 `reporting/performance_campagnes/index.html`. Chaque fonction de
-`reporting/indicateurs.py` reproduit la mesure DAX de référence de la fiche
+`src/reporting/indicateurs.py` reproduit la mesure DAX de référence de la fiche
 (numéro d'indicateur en docstring) et lit le DWH `dwh` et le DTM
 `dtm_performance_campagnes`, sur PostgreSQL comme sur SQL Server.
 
@@ -212,11 +213,13 @@ restitution » et les publie dans une page HTML autonome :
 | Activité | 3.4.1 campagnes par mois · 3.4.2 durée · 3.4.3 captures par campagne · 3.4.4 campagnes actives |
 | Économique | 3.5.1 par pêcheur · 3.5.2 par campagne · 3.5.3 coûts (3.5.4 exclu par le SFD) |
 
-La restitution n'affiche **aucune donnée brute** : uniquement des indicateurs
-et des agrégats, sans identifiant de pêcheur, de campagne ou de capture. La
-liste des campagnes actives (3.4.4) n'est proposée qu'en export CSV, à côté de
-la page. Les hypothèses de la fiche (pêcheur = capitaine, tranches d'âge, seuil
-de 1950…) sont rappelées dans la page.
+La restitution affiche des indicateurs et des agrégats. La liste détaillée des
+campagnes actives demandée par le 3.4.4 figure directement dans sa section ; le
+bouton « Exporter en CSV » construit le fichier au clic dans le navigateur, en
+UTF-8 et avec le séparateur `;`. Python ne génère donc aucun CSV et l'unique
+artefact produit sur disque est `reporting/performance_campagnes/index.html`.
+Les hypothèses de la fiche (pêcheur = capitaine, tranches d'âge, seuil de
+1950…) sont rappelées dans la page.
 
 ### Actualisation
 
@@ -226,24 +229,24 @@ La restitution suit le contenu de la base :
   automatiquement** après les DTM (`--sans-rapport` pour s'en passer). Après
   un ajout dans les sources, `python main.py --dwh-only` reconstruit le DWH,
   les DTM puis la page.
-- `python -m reporting.build_report --watch` **surveille** le DWH et les DTM
+- `python -m src.reporting.build_report --watch` **surveille** le DWH et les DTM
   (nombre de lignes de chaque table lue, toutes les 30 s par défaut) et
   régénère la page dès qu'une donnée change ; la page ouverte se recharge
   seule. `Ctrl+C` arrête la surveillance.
 
 ```bash
-python -m reporting.build_report                        # depuis la base (.env)
-python -m reporting.build_report --date-ref 2025-12-31  # date de référence (défaut : aujourd'hui)
-python -m reporting.build_report --watch 60             # surveillance toutes les 60 s
-python -m reporting.build_report --demo                 # données fictives, sans base
-python -m reporting.build_report --plotly inline        # fichier utilisable hors ligne
+python -m src.reporting.build_report                        # depuis la base (.env)
+python -m src.reporting.build_report --date-ref 2025-12-31  # date de référence (défaut : aujourd'hui)
+python -m src.reporting.build_report --watch 60             # surveillance toutes les 60 s
+python -m src.reporting.build_report --demo                 # données fictives, sans base
+python -m src.reporting.build_report --plotly inline        # fichier utilisable hors ligne
 ```
 
 | Fichier | Rôle |
 |---|---|
-| `reporting/data.py` | requêtes DWH/DTM, empreinte de la base, jeu de démonstration |
-| `reporting/indicateurs.py` | calcul des indicateurs, une fonction par mesure de la fiche |
-| `reporting/restitution.py` | regroupement en thèmes, textes, hypothèses |
-| `reporting/charts.py` | graphiques Plotly et charte |
-| `reporting/templates/` | gabarits Jinja2 de la page |
-| `reporting/build_report.py` | ligne de commande, export CSV, surveillance |
+| `src/reporting/data.py` | requêtes DWH/DTM, empreinte de la base, jeu de démonstration |
+| `src/reporting/indicateurs.py` | calcul des indicateurs, une fonction par mesure de la fiche |
+| `src/reporting/restitution.py` | regroupement en thèmes, textes, hypothèses |
+| `src/reporting/charts.py` | graphiques Plotly et charte |
+| `src/reporting/templates/` | gabarits Jinja2 de la page |
+| `src/reporting/build_report.py` | ligne de commande, rendu HTML, surveillance |
