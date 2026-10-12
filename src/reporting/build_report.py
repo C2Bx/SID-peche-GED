@@ -1,9 +1,9 @@
 """Génère la restitution HTML des 17 indicateurs depuis le DWH et le DTM.
 
-    python -m reporting.build_report                     # lit la base du .env
-    python -m reporting.build_report --date-ref 2025-12-31
-    python -m reporting.build_report --watch             # se régénère à chaque ajout en base
-    python -m reporting.build_report --demo              # données fictives, sans base
+    python -m src.reporting.build_report                     # lit la base du .env
+    python -m src.reporting.build_report --date-ref 2025-12-31
+    python -m src.reporting.build_report --watch             # se régénère à chaque ajout en base
+    python -m src.reporting.build_report --demo              # données fictives, sans base
 """
 from __future__ import annotations
 
@@ -19,13 +19,14 @@ import pandas as pd
 import plotly.offline
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from reporting import charts, indicateurs
-from reporting.data import SidData, demo_data, fingerprint, load
-from reporting.formatting import format_date
-from reporting.restitution import HYPOTHESES, build_themes
+from src.reporting import charts
+from src.reporting.data import SidData, demo_data, fingerprint, load
+from src.reporting.formatting import format_date
+from src.reporting.restitution import HYPOTHESES, build_themes
 
-REPORTING_DIR = Path(__file__).resolve().parent
-DEFAULT_OUTPUT = REPORTING_DIR / "performance_campagnes" / "index.html"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
+DEFAULT_OUTPUT = PROJECT_ROOT / "reporting" / "performance_campagnes" / "index.html"
 
 
 def plotly_script_tag(mode: str) -> str:
@@ -38,18 +39,19 @@ def plotly_script_tag(mode: str) -> str:
 
 
 def render(d: SidData, *, source: str, date_ref: pd.Timestamp, plotly_mode: str = "cdn",
-           export_name: str = "", refresh_seconds: int = 0) -> str:
+           refresh_seconds: int = 0) -> str:
     """Produit la page HTML complète de la restitution."""
-    env = Environment(loader=FileSystemLoader(REPORTING_DIR / "templates"),
+    env = Environment(loader=FileSystemLoader(TEMPLATE_DIR),
                       autoescape=select_autoescape(["html", "j2"]),
                       trim_blocks=True, lstrip_blocks=True)
     return env.get_template("restitution.html.j2").render(
         title="Restitution — SID Pêche Province Sud",
         generated_at=datetime.now().strftime("%d/%m/%Y à %H:%M"),
         date_ref=format_date(date_ref),
+        date_ref_iso=date_ref.strftime("%Y-%m-%d"),
         source=source,
         hypotheses=HYPOTHESES,
-        themes=build_themes(d, date_ref, export_name),
+        themes=build_themes(d, date_ref),
         plotly_script=plotly_script_tag(plotly_mode),
         series_dark=charts.SERIES_DARK,
         refresh_seconds=refresh_seconds,
@@ -58,16 +60,9 @@ def render(d: SidData, *, source: str, date_ref: pd.Timestamp, plotly_mode: str 
 
 def write_report(d: SidData, output: Path, *, source: str, date_ref: pd.Timestamp,
                  plotly_mode: str = "cdn", refresh_seconds: int = 0) -> Path:
-    """Écrit la page et l'export CSV des campagnes actives (3.4.4)."""
+    """Écrit l'unique artefact de restitution : la page HTML."""
     output.parent.mkdir(parents=True, exist_ok=True)
-    export = output.parent / f"campagnes_actives_{date_ref:%Y-%m-%d}.csv"
-    actives = indicateurs.campagnes_actives(d, date_ref)
-    if len(actives):
-        # Le détail n'est pas affiché dans la restitution : il est seulement
-        # proposé en export, comme le demande la fiche pour l'indicateur 3.4.4.
-        actives.to_csv(export, index=False, sep=";", encoding="utf-8-sig", date_format="%d/%m/%Y")
     html = render(d, source=source, date_ref=date_ref, plotly_mode=plotly_mode,
-                  export_name=export.name if len(actives) else "",
                   refresh_seconds=refresh_seconds)
     output.write_text(html, encoding="utf-8")
     logging.info("Restitution générée : %s", output)

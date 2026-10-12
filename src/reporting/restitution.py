@@ -5,10 +5,10 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-from reporting import charts
-from reporting import indicateurs as ind
-from reporting.data import SidData
-from reporting.formatting import format_compact, format_date, format_number
+from src.reporting import charts
+from src.reporting import indicateurs as ind
+from src.reporting.data import SidData
+from src.reporting.formatting import format_compact, format_date, format_number
 
 
 @dataclass(frozen=True)
@@ -28,7 +28,8 @@ class Indicateur:
     chart_html: str = ""
     table_html: str = ""
     notes: list[str] = field(default_factory=list)
-    export: str = ""
+    csv_export: bool = False
+    table_visible: bool = False
     wide: bool = False
 
 
@@ -57,14 +58,17 @@ HYPOTHESES = [
 ]
 
 
-def _table(df: pd.DataFrame, decimals: dict[str, int] | None = None) -> str:
+def _table(df: pd.DataFrame, decimals: dict[str, int] | None = None,
+           date_format: str = "%m/%Y") -> str:
     """Vue tableau agrégée d'un graphique, nombres et dates à la française."""
     decimals = decimals or {}
     out = df.copy()
     for column in out.columns:
         series = out[column]
         if pd.api.types.is_datetime64_any_dtype(series):
-            out[column] = series.map(lambda v: "–" if pd.isna(v) else v.strftime("%m/%Y"))
+            out[column] = series.map(
+                lambda v: "–" if pd.isna(v) else v.strftime(date_format)
+            )
         elif pd.api.types.is_numeric_dtype(series) and column != "Année":
             d = decimals.get(column, 1 if "%" in column or "moyen" in column.lower() else 0)
             out[column] = series.map(lambda v, d=d: format_number(v, d))
@@ -227,7 +231,7 @@ def environnemental(d: SidData, ref: pd.Timestamp) -> Theme:
     ])
 
 
-def activite(d: SidData, ref: pd.Timestamp, export_name: str) -> Theme:
+def activite(d: SidData, ref: pd.Timestamp) -> Theme:
     mois = ind.campagnes_par_mois(d)
     duree = ind.duree_campagnes(d)
     durees = ind.repartition_durees(d)
@@ -269,8 +273,18 @@ def activite(d: SidData, ref: pd.Timestamp, export_name: str) -> Theme:
             "Sorties en cours à la date choisie : début au plus tard ce jour-là, fin au plus tôt.",
             kpis=[Kpi("Campagnes actives", format_number(len(actives)),
                       detail=f"au {format_date(ref)}")],
+            table_html=_table(
+                actives.rename(columns={
+                    "Campagne": "Identifiant de campagne",
+                    "Début": "Date de début",
+                    "Fin": "Date de fin",
+                    "Durée (j)": "Durée",
+                }),
+                date_format="%d/%m/%Y",
+            ),
             notes=[f"{sans_fin} campagne(s) commencée(s) sans date de fin : exclues, à vérifier."],
-            export=export_name if len(actives) else "",
+            csv_export=True,
+            table_visible=True,
         ),
     ])
 
@@ -335,6 +349,6 @@ def economique(d: SidData, ref: pd.Timestamp) -> Theme:
     ], exclus=["3.5.4"])
 
 
-def build_themes(d: SidData, ref: pd.Timestamp, export_name: str) -> list[Theme]:
+def build_themes(d: SidData, ref: pd.Timestamp) -> list[Theme]:
     return [sociologique(d, ref), materiel(d, ref), environnemental(d, ref),
-            activite(d, ref, export_name), economique(d, ref)]
+            activite(d, ref), economique(d, ref)]

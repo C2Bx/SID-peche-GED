@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from reporting.data import SidData
+from src.reporting.data import SidData
 
 # Hypothèses de la fiche « à valider », regroupées pour être affichées.
 SEUIL_ANNEE_CONSTRUCTION = 1950

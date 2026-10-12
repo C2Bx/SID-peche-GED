@@ -113,7 +113,10 @@ h2.theme-title { font-size: 20px; margin: 0; }
 .notes { margin: 8px 0 0; padding-left: 18px; color: var(--text-secondary); font-size: 12px; }
 .excluded { font-size: 12px; color: var(--text-muted); margin-top: 8px; }
 h4 { font-size: 13px; margin: 14px 0 0; color: var(--text-secondary); }
-.export { display: inline-block; margin-top: 8px; font-size: 13px; color: var(--accent); }
+.export { display: inline-block; margin-top: 8px; border: 1px solid var(--accent);
+  border-radius: 6px; padding: 5px 10px; font: inherit; font-size: 13px;
+  color: var(--accent); background: transparent; cursor: pointer; }
+.export:hover { color: var(--surface-1); background: var(--accent); }
 details.hypotheses summary { font-size: 14px; }
 details.hypotheses ul { margin: 8px 0 0; padding-left: 18px; font-size: 13px;
   color: var(--text-secondary); }
@@ -172,6 +175,34 @@ footer { margin-top: 32px; font-size: 12px; color: var(--text-muted); }
   if (window.matchMedia) {
     window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", apply);
   }
+})();
+
+// L'export 3.4.4 est construit au clic depuis le tableau HTML : aucun fichier
+// annexe ni serveur web n'est nécessaire.
+(function () {
+  function csvCell(value) {
+    return '"' + value.replace(/"/g, '""') + '"';
+  }
+  document.querySelectorAll("[data-csv-filename]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      var container = button.parentElement.querySelector("[data-csv-table]");
+      var rows = Array.from(container.querySelectorAll("tr")).map(function (row) {
+        return Array.from(row.querySelectorAll("th, td")).map(function (cell) {
+          return csvCell(cell.textContent.trim());
+        }).join(";");
+      });
+      var blob = new Blob(["\ufeff" + rows.join("\r\n") + "\r\n"],
+                          {type: "text/csv;charset=utf-8"});
+      var url = URL.createObjectURL(blob);
+      var link = document.createElement("a");
+      link.href = url;
+      link.download = button.dataset.csvFilename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    });
+  });
 })();
 </script>
 </body>

@@ -187,7 +187,7 @@ def run_report(connection: object, settings: object, args: argparse.Namespace) -
         return
     # Import différé : Plotly et pandas ne sont chargés que si le rapport est
     # produit, ce qui garde l'ETL seul utilisable sans ces dépendances.
-    from reporting.build_report import generate_from_connection
+    from src.reporting.build_report import generate_from_connection
 
     generate_from_connection(connection, settings.db_engine)
 
