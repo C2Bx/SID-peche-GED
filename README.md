@@ -216,6 +216,11 @@ restitution » et les publie dans une page HTML autonome. Le dossier
 | Activité | 3.4.1 campagnes par mois · 3.4.2 durée · 3.4.3 captures par campagne · 3.4.4 campagnes actives |
 | Économique | 3.5.1 par pêcheur · 3.5.2 par campagne · 3.5.3 coûts (3.5.4 exclu par le SFD) |
 
+Chaque thème s'ouvre sur un bandeau de chiffres clés (avec comparaison à la
+même période de l'année précédente), suivi des graphiques par paires. La
+page s'ouvre en mode jour ; un bouton ☀ / ☾ bascule en mode nuit et le choix
+est retenu par le navigateur.
+
 La restitution affiche des indicateurs et des agrégats. La liste détaillée des
 campagnes actives demandée par le 3.4.4 figure directement dans sa section ; le
 bouton « Exporter en CSV » construit le fichier au clic dans le navigateur, en

@@ -435,3 +435,129 @@ def _tranche_jours_mer(j: float) -> str:
     if j <= 4:
         return "3 à 4 jours"
     return "5 jours et plus"
+
+
+# ---------------------------------------------------------------------------
+# Indicateurs complémentaires des bandeaux de KPI
+# ---------------------------------------------------------------------------
+# Ils dérivent des mesures de la fiche (mêmes tables, mêmes règles) et servent
+# à les situer : comparaison à la même période de l'année précédente, parts,
+# médianes. Aucun ne remplace une mesure de la fiche.
+
+def meme_date_annee_precedente(date_ref: pd.Timestamp) -> pd.Timestamp:
+    return date_ref - pd.DateOffset(years=1)
+
+
+def periode(date_ref: pd.Timestamp, decalage: int = 0) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """Du 1er janvier à la date de référence, décalé de `decalage` années."""
+    fin = date_ref - pd.DateOffset(years=decalage)
+    return pd.Timestamp(fin.year, 1, 1), fin
+
+
+def variation(actuel: float, precedent: float) -> float:
+    """Variation relative en %, NaN si la base est nulle ou absente."""
+    if precedent is None or pd.isna(precedent) or precedent == 0 or pd.isna(actuel):
+        return float("nan")
+    return (actuel - precedent) / abs(precedent) * 100
+
+
+def est_femme(sexe: pd.Series) -> pd.Series:
+    """Libellés commençant par F (« F », « Féminin »…), insensible à la casse."""
+    return sexe.fillna("").astype(str).str.strip().str.upper().str.startswith("F")
+
+
+def part_femmes(d: SidData, date_ref: pd.Timestamp) -> float:
+    """Part des femmes parmi les pêcheurs actifs (3.1.2, découpage par genre)."""
+    keys = _cles_actives(d, date_ref)
+    if not len(keys):
+        return float("nan")
+    p = d.personnes[d.personnes["personne_key"].isin(keys)]
+    return float(est_femme(p["sexe"]).sum() / len(keys) * 100)
+
+
+def nouveaux_pecheurs(d: SidData, date_ref: pd.Timestamp) -> int:
+    """Pêcheurs actifs dont la première carte sans statut est de l'année de référence."""
+    keys = _cles_actives(d, date_ref)
+    valides = d.cartes[d.cartes["capitaine_key"].isin(keys)
+                       & d.cartes["carte_autorisation_statut"].isna()
+                       & d.cartes["carte_annee"].notna()]
+    premiere = valides.groupby("capitaine_key")["carte_annee"].min()
+    return int((premiere == str(date_ref.year)).sum())
+
+
+def repartition_experience(d: SidData, date_ref: pd.Timestamp) -> pd.DataFrame:
+    """3.1.3 Pêcheurs actifs par nombre d'années d'activité (même règle que la moyenne)."""
+    keys = _cles_actives(d, date_ref)
+    c = d.cartes[d.cartes["capitaine_key"].isin(keys)
+                 & d.cartes["carte_autorisation_statut"].isna()
+                 & d.cartes["carte_annee"].notna()]
+    annees = c[c["carte_annee"] <= str(date_ref.year)].groupby("capitaine_key")["carte_annee"].nunique()
+    tranche = annees.map(lambda n: f"{n} an" if n == 1 else (f"{n} ans" if n < 5 else "5 ans et plus"))
+    order = ["1 an", "2 ans", "3 ans", "4 ans", "5 ans et plus"]
+    counts = tranche.value_counts().reindex(order, fill_value=0)
+    return pd.DataFrame({"Expérience": order, "Pêcheurs": counts.values})
+
+
+def stats_navires(d: SidData, date_ref: pd.Timestamp) -> dict[str, float]:
+    """3.2.2 compléments : âge médian et part des navires de 30 ans et plus."""
+    annee = pd.to_numeric(d.navires.loc[d.navires["navire_id"].notna(), "annee_construction"],
+                          errors="coerce")
+    annee = annee[(annee >= SEUIL_ANNEE_CONSTRUCTION) & (annee <= date_ref.year)]
+    age = date_ref.year - annee
+    return {"age_median": float(age.median()) if len(age) else float("nan"),
+            "part_30_ans": float((age >= 30).mean() * 100) if len(age) else float("nan")}
+
+
+def stats_captures(d: SidData) -> dict[str, float | str]:
+    """3.3 compléments : valeur, prix moyen, espèce et zone principales."""
+    c = d.captures
+    poids = c["capture_poids_entier_total"].sum()
+    valeur = c["capture_valeurxpf"].sum()
+    especes = captures_par_espece(d)
+    connues = especes[especes["Espèce"] != "Inconnue"]
+    zones = poids_par_zone(d)
+    return {
+        "captures": int(c["capture_id"].nunique()),
+        "poids": float(poids), "valeur": float(valeur),
+        "prix_moyen": float(valeur / poids) if poids else float("nan"),
+        "poids_moyen": float(c["capture_poids_entier_total"].mean()),
+        "nb_especes": int(connues["Espèce"].nunique()),
+        "espece_principale": connues["Espèce"].iloc[0] if len(connues) else "–",
+        "part_espece_principale": float(connues["Part du poids (%)"].iloc[0]) if len(connues) else float("nan"),
+        "zone_principale": zones["Zone"].iloc[0] if len(zones) else "–",
+        "nb_zones": int(len(zones)),
+    }
+
+
+def stats_campagnes(d: SidData, date_ref: pd.Timestamp, decalage: int = 0) -> dict[str, float]:
+    """3.4 et 3.5 sur la période du 1er janvier à la date de référence (ou N-1)."""
+    debut, fin = periode(date_ref, decalage)
+    c = d.campagnes[(d.campagnes["date_debut"] >= debut) & (d.campagnes["date_debut"] <= fin)]
+    recette = c["campagne_recette"].sum(min_count=1)
+    benefice = c["campagne_benefice"].sum(min_count=1)
+    par_pecheur = c.groupby("capitaine_id")["campagne_benefice"].sum(min_count=1).dropna()
+    jours_mer = c["jours_mer"].sum(min_count=1)
+    return {
+        "campagnes": int(c["campagne_id"].nunique()),
+        "jours_mer": float(jours_mer) if pd.notna(jours_mer) else float("nan"),
+        "part_jours_peche": float(c["jours_peche"].sum() / jours_mer * 100) if jours_mer else float("nan"),
+        "recette": float(recette) if pd.notna(recette) else float("nan"),
+        "depense": float(c["campagne_depense"].sum(min_count=1)),
+        "benefice": float(benefice) if pd.notna(benefice) else float("nan"),
+        "marge": float(benefice / recette * 100) if recette else float("nan"),
+        "benefice_median_pecheur": float(par_pecheur.median()) if len(par_pecheur) else float("nan"),
+        "pecheurs_deficitaires": float((par_pecheur < 0).mean() * 100) if len(par_pecheur) else float("nan"),
+    }
+
+
+def repartition_benefice_campagne(d: SidData) -> pd.DataFrame:
+    """3.5.2 Campagnes par tranche de bénéfice (agrégat, pas de campagne isolée)."""
+    b = d.campagnes["campagne_benefice"].dropna()
+    bornes = [-float("inf"), -50_000, 0, 50_000, 100_000, 200_000, float("inf")]
+    labels = ["Perte > 50 k", "Perte ≤ 50 k", "0 à 50 k", "50 à 100 k", "100 à 200 k", "Plus de 200 k"]
+    counts = pd.cut(b, bornes, right=False, labels=labels).value_counts().reindex(labels, fill_value=0)
+    return pd.DataFrame({"Bénéfice (XPF)": labels, "Campagnes": counts.values})
+
+
+def duree_mediane(d: SidData) -> float:
+    return float(d.campagnes["duree_jours"].median())

@@ -5,6 +5,10 @@
     <h1>{{ title }}</h1>
     <p class="meta">Date de référence : <strong>{{ date_ref }}</strong> · Source : {{ source }} · généré le {{ generated_at }}{% if refresh_seconds %} · actualisation automatique{% endif %}</p>
   </div>
+  <div class="theme-toggle" role="group" aria-label="Mode d'affichage">
+    <button type="button" data-set-theme="light" aria-pressed="true">☀ Jour</button>
+    <button type="button" data-set-theme="dark" aria-pressed="false">☾ Nuit</button>
+  </div>
 </header>
 
 <nav class="themes" aria-label="Thèmes">
@@ -20,44 +24,53 @@
 <section class="theme" id="{{ theme.id }}">
   <header>
     <h2 class="theme-title">{{ theme.titre }}</h2>
-    <p class="subtitle">{{ theme.question }}</p>
+    <p class="question">{{ theme.question }}</p>
   </header>
+
+  <div class="kpis">
+    {% for kpi in theme.kpis %}
+    <div class="card kpi">
+      <div class="label"><span class="code">{{ kpi.code }}</span>{{ kpi.label }}</div>
+      <div class="value">{{ kpi.value }}{% if kpi.unit %} <span class="unit">{{ kpi.unit }}</span>{% endif %}</div>
+      {% if kpi.delta %}<div class="delta">{{ kpi.delta }}</div>{% endif %}
+      {% if kpi.detail %}<div class="detail">{{ kpi.detail }}</div>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+
   <div class="grid">
-    {% for ind in theme.indicateurs %}
-    <article class="card{% if ind.wide %} wide{% endif %}">
-      <h3 style="margin:0;font-size:16px"><span class="code">{{ ind.code }}</span>{{ ind.titre }}</h3>
-      <p class="definition">{{ ind.definition }}</p>
-      {% if ind.kpis %}
-      <div class="mini-kpis">
-        {% for kpi in ind.kpis %}
-        <div class="kpi">
-          <div class="label">{{ kpi.label }}</div>
-          <div class="value">{{ kpi.value }}{% if kpi.unit %} <span class="unit">{{ kpi.unit }}</span>{% endif %}</div>
-          {% if kpi.detail %}<div class="detail">{{ kpi.detail }}</div>{% endif %}
-        </div>
-        {% endfor %}
-      </div>
+    {% for carte in theme.cartes %}
+    <article class="card chart-card{% if carte.wide %} wide{% endif %}">
+      <h3><span class="code">{{ carte.code }}</span>{{ carte.titre }}</h3>
+      <p class="definition">{{ carte.definition }}</p>
+      {{ carte.chart_html | safe }}
+      {% if carte.table_visible %}
+      <div class="table-wrap" data-csv-table>{{ carte.table_html | safe }}</div>
       {% endif %}
-      {{ ind.chart_html | safe }}
-      {% if ind.csv_export %}
+      {% if carte.csv_export %}
       <button class="export" type="button"
               data-csv-filename="campagnes_actives_{{ date_ref_iso }}.csv">Exporter en CSV</button>
       {% endif %}
-      {% if ind.notes %}<ul class="notes">{% for n in ind.notes %}<li>{{ n }}</li>{% endfor %}</ul>{% endif %}
-      {% if ind.table_html %}
-      {% if ind.table_visible %}
-      <div class="table-wrap" data-csv-table>{{ ind.table_html | safe }}</div>
-      {% else %}
-      <details>
-        <summary>Voir les chiffres</summary>
-        <div class="table-wrap">{{ ind.table_html | safe }}</div>
-      </details>
-      {% endif %}
-      {% endif %}
+      <div class="footer">
+        {% if carte.notes %}<ul class="notes">{% for n in carte.notes %}<li>{{ n }}</li>{% endfor %}</ul>{% endif %}
+        {% if carte.table_html and not carte.table_visible %}
+        <details>
+          <summary>Voir les chiffres</summary>
+          <div class="table-wrap">{{ carte.table_html | safe }}</div>
+        </details>
+        {% endif %}
+      </div>
     </article>
     {% endfor %}
   </div>
-  {% if theme.exclus %}<p class="excluded">Exclus par le SFD : {{ theme.exclus | join(", ") }}.</p>{% endif %}
+
+  <div class="theme-footer">
+    <details>
+      <summary>Définitions des indicateurs</summary>
+      <dl>{% for code, titre, definition in theme.definitions %}<dt>{{ code }} {{ titre }}</dt><dd>{{ definition }}</dd>{% endfor %}</dl>
+    </details>
+    {% if theme.exclus %}<span>Exclus par le SFD : {{ theme.exclus | join(", ") }}.</span>{% endif %}
+  </div>
 </section>
 {% endfor %}
 

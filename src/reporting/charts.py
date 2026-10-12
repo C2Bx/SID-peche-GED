@@ -87,14 +87,14 @@ def bars(labels: Sequence, values: Sequence, *, horizontal: bool = False,
     return fig
 
 
-def box_by_year(df: pd.DataFrame, x: str, y: str, *, unit: str = "") -> go.Figure:
+def box_by_year(df: pd.DataFrame, x: str, y: str, *, height: int = 300) -> go.Figure:
     """Distribution d'une mesure par année, sans montrer les valeurs individuelles."""
     fig = go.Figure(go.Box(
         x=df[x].astype(str), y=df[y], marker={"color": PALETTE[0]},
         line={"width": 1.5}, boxpoints=False, name=y,
         hoverinfo="skip",
     ))
-    _layout(fig, height=300, showlegend=False)
+    _layout(fig, height=height, showlegend=False)
     fig.update_xaxes(showgrid=False, type="category")
     fig.update_yaxes(tickformat="~s", zeroline=True, zerolinewidth=1.5)
     return fig

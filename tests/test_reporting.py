@@ -321,3 +321,38 @@ def test_watch_regenerates_only_when_the_database_changes(monkeypatch, tmp_path)
     assert build_report.watch(args) == 0
     # 1er passage : génération ; 2e : base inchangée ; 3e : une ligne ajoutée.
     assert writes == [5, 5]
+
+
+# --- Bandeaux de KPI ---------------------------------------------------------
+
+def test_kpi_band_complements() -> None:
+    d = _data()
+    assert ind.part_femmes(d, REF) == 0
+    # Pêcheur 1 : première carte valide en 2024 ; pêcheur 6 : en 2026.
+    assert ind.nouveaux_pecheurs(d, REF) == 1
+    exp = ind.repartition_experience(d, REF).set_index("Expérience")["Pêcheurs"]
+    assert exp["1 an"] == 1 and exp["2 ans"] == 1
+
+
+def test_period_comparison_uses_same_period_last_year() -> None:
+    d = _data()
+    assert ind.periode(REF) == (pd.Timestamp(2026, 1, 1), REF)
+    s, s1 = ind.stats_campagnes(d, REF), ind.stats_campagnes(d, REF, 1)
+    assert s["campagnes"] == 4 and s1["campagnes"] == 1
+    assert s["recette"] == 230
+    assert ind.variation(s["campagnes"], s1["campagnes"]) == 300
+    assert pd.isna(ind.variation(5, 0))
+
+
+def test_profit_bands_per_campaign() -> None:
+    bands = ind.repartition_benefice_campagne(_data()).set_index("Bénéfice (XPF)")["Campagnes"]
+    assert bands["Perte ≤ 50 k"] == 1 and bands["0 à 50 k"] == 3 and bands.sum() == 4
+
+
+def test_page_opens_in_day_mode_with_toggle(tmp_path) -> None:
+    output = tmp_path / "index.html"
+    build_report.run(["--demo", "--date-ref", "2026-10-12", "--output", str(output)])
+    html = output.read_text(encoding="utf-8")
+    assert '<html lang="fr" data-theme="light">' in html
+    assert "prefers-color-scheme" not in html  # le système ne force pas le mode nuit
+    assert 'data-set-theme="dark"' in html and 'data-set-theme="light"' in html
