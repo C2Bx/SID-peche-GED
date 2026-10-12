@@ -4,6 +4,7 @@ import argparse
 import logging
 import sys
 import time
+import webbrowser
 
 from src.api.province_sud_client import ProvinceSudClient
 from src.config import TABLES, load_settings
@@ -53,11 +54,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="ne régénère pas la restitution HTML après les DTM",
     )
+    parser.add_argument(
+        "--open-report",
+        action="store_true",
+        help="ouvre le rapport HTML dans le navigateur après sa génération",
+    )
     args = parser.parse_args(argv)
     if args.from_dtm and args.no_report:
         parser.error(
             "--from-dtm est incompatible avec --no-report : "
             "aucune étape ne resterait à exécuter"
+        )
+    if args.open_report and args.no_report:
+        parser.error(
+            "--open-report est incompatible avec --no-report : "
+            "le rapport ne serait pas généré"
         )
     return args
 
@@ -190,7 +201,9 @@ def run_report(connection: object, settings: object, args: argparse.Namespace) -
     # produit, ce qui garde l'ETL seul utilisable sans ces dépendances.
     from src.reporting.build_report import generate_from_connection
 
-    generate_from_connection(connection, settings.db_engine)
+    report_path = generate_from_connection(connection, settings.db_engine)
+    if args.open_report:
+        webbrowser.open(report_path.resolve().as_uri(), new=2, autoraise=True)
 
 
 def run(argv: list[str] | None = None) -> int:

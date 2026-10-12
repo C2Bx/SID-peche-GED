@@ -45,6 +45,8 @@ python main.py --from-json  # JSON locaux -> ODS -> DWH -> DTM -> reporting
 python main.py --from-ods   # ODS existant -> DWH -> DTM -> reporting
 python main.py --from-dwh   # DWH existant -> DTM -> reporting
 python main.py --from-dtm   # DTM existants -> reporting uniquement
+python main.py --open-report            # pipeline complet, puis ouverture du rapport
+python main.py --from-dtm --open-report # reporting depuis les DTM, puis ouverture
 ```
 
 Les quatre options `--from-*` sont mutuellement exclusives et indiquent le
@@ -52,7 +54,8 @@ point de reprise du pipeline. Elles n'appellent pas l'API et ne requièrent donc
 pas `PROVINCE_SUD_API_KEY`. L'option `--no-report` peut être ajoutée pour
 arrêter le pipeline après les DTM, ou après la dernière reconstruction demandée.
 Elle est incompatible avec `--from-dtm`, qui ne laisserait alors aucune étape à
-exécuter.
+exécuter. L'option `--open-report` ouvre automatiquement le rapport HTML dans le
+navigateur après sa génération ; elle est incompatible avec `--no-report`.
 
 Le fichier `docker-compose.yml` reste dédié à PostgreSQL. Pour SQL Server sous
 Windows, installer SQL Server (Express ou Developer), SQL Server Management
